@@ -37,6 +37,14 @@ impl BoxRegion {
         Self { min, max }
     }
 
+    /// The smallest box containing this one and `c`.
+    pub fn including(&self, c: Cell) -> Self {
+        Self {
+            min: std::array::from_fn(|i| self.min[i].min(c[i])),
+            max: std::array::from_fn(|i| self.max[i].max(c[i])),
+        }
+    }
+
     pub fn contains(&self, c: Cell) -> bool {
         (0..3).all(|i| self.min[i] <= c[i] && c[i] <= self.max[i])
     }
@@ -151,6 +159,19 @@ mod tests {
             }
         );
         assert_eq!(b.volume(), 4 * 2 * 3);
+    }
+
+    #[test]
+    fn including_grows_to_reach_the_cell() {
+        let b = BoxRegion::spanning([1, 1, 1], [2, 2, 2]);
+        assert_eq!(
+            b.including([0, 3, 1]),
+            BoxRegion {
+                min: [0, 1, 1],
+                max: [2, 3, 2]
+            }
+        );
+        assert_eq!(b.including([2, 1, 2]), b);
     }
 
     #[test]

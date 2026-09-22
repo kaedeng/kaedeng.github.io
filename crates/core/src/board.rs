@@ -94,6 +94,14 @@ impl Board {
         true
     }
 
+    /// Swaps placed box `old` for `new`, keeping `old` if `new` breaks the rules.
+    pub fn replace(&mut self, old: BoxRegion, new: BoxRegion) -> Result<(), Rejection> {
+        self.remove_at(old.min);
+        self.place(new).inspect_err(|_| {
+            self.place(old).expect("the old box was legal where it was");
+        })
+    }
+
     pub fn clear(&mut self) {
         self.boxes.clear();
         self.placed = 0;
@@ -209,6 +217,24 @@ mod tests {
         b.clear();
         assert!(b.boxes().is_empty());
         assert_eq!(b.place(slab(1)), Ok(()));
+    }
+
+    #[test]
+    fn replace_swaps_a_box_or_keeps_it() {
+        let hidden = |cell| Clue {
+            cell,
+            volume: None,
+            shape: None,
+        };
+        let mut b = Board::new(vec![hidden([0, 0, 0]), hidden([3, 3, 3])]);
+        let small = BoxRegion::spanning([0, 0, 0], [1, 0, 0]);
+        let bigger = BoxRegion::spanning([0, 0, 0], [1, 1, 0]);
+        b.place(small).unwrap();
+        assert_eq!(b.replace(small, bigger), Ok(()));
+        assert_eq!(b.boxes(), &[bigger]);
+        let two_clues = BoxRegion::spanning([0, 0, 0], [3, 3, 3]);
+        assert_eq!(b.replace(bigger, two_clues), Err(Rejection::ClueCount(2)));
+        assert_eq!(b.boxes(), &[bigger]);
     }
 
     #[test]
