@@ -181,3 +181,26 @@ Bring the actual error message rather than a description of it; the exact words 
 
 And if anything in this brief is unclear or seems wrong, tell me.
 That is a bug too, and I would rather fix it than have you guess.
+---
+
+## This site: 3D Patches
+
+Live at <https://kaedeng.github.io/>. A weekly 3D take on LinkedIn's Patches puzzle: fill a 4×4×4 cube with boxes so every box holds exactly one clue. The board is drawn in WebGL2 by Rust compiled to WebAssembly; the pages are a Next.js static export.
+
+```
+crates/core   rules, solver, generator (cargo test -p patches-core)
+crates/wasm   three-d renderer + input, built with wasm-pack
+web/          Next.js app (pnpm)
+```
+
+Run it locally:
+
+```bash
+rustup target add wasm32-unknown-unknown && brew install wasm-pack   # once
+cd web && pnpm install
+pnpm gen      # writes src/puzzle.json for the current ISO week (SEED=... overrides)
+pnpm wasm     # builds crates/wasm into public/wasm
+pnpm dev      # http://localhost:3000
+```
+
+Deploys happen from `.github/workflows/deploy.yml` on every push to `main`, every Monday (cron) so a new puzzle appears, and on demand (`gh workflow run deploy.yml -f seed=...`).
