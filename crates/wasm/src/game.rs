@@ -1,22 +1,30 @@
 //! The 3D board: a white wireframe of the 4x4x4 cube, rendered with three-d on WebGL2.
-//! Placed boxes are solid blocks in their clue's colour that tween in and out. JavaScript
+//! Each clue is a marker in its box's shape. Placed boxes are solid blocks in their clue's
+//! colour that tween in and out. JavaScript
 //! owns the canvas events and forwards them, and calls `tick` + `render` on animation
 //! frames only while something moves.
 
 use std::sync::Arc;
 
-use patches_core::{Board, BoxRegion, CELLS, Cell, Puzzle, cell_at};
+use patches_core::{Board, BoxRegion, Cell, Puzzle};
 use three_d::*;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
 use crate::anim::Anim;
-use crate::geom::{DOT_R, MARK_R, Pose, block_pose, cell_center, grid_lines, lattice_dots};
+use crate::geom::{
+    DOT_R, MARK_R, Pose, block_pose, cell_center, grid_lines, lattice_dots, marker_half,
+};
 use crate::input::{Input, Moved, Released, Target};
+use crate::pick::pick;
 
-const CAMERA_DISTANCE: f32 = 24.0;
+/// Close enough to fill the view, far enough that the whole cube fits from every angle.
+const CAMERA_DISTANCE: f32 = 12.0;
+/// Opacity of the grid lines: faint hairlines you look through.
+const WIRE_ALPHA: u8 = 56;
 const ORBIT_SPEED: f32 = 0.006;
-const PITCH_RANGE: (f32, f32) = (0.15, 1.45);
+/// Just short of straight up and straight down, so the camera can go all the way around.
+const PITCH_RANGE: (f32, f32) = (-1.5, 1.5);
 
 /// Same colours as `PALETTE` in web/src/lib/puzzle.ts so the 3D view matches the layer grids.
 const PALETTE: [Srgba; 16] = [
@@ -78,16 +86,18 @@ pub struct Game {
     camera: Camera,
     yaw: f32,
     pitch: f32,
-    /// One full-size cube per cell, used only for picking and never rendered.
-    cells: InstancedMesh,
     wires: Gm<InstancedMesh, ColorMaterial>,
-    /// White lattice dots plus a marker per clue. A block hides its own clue's marker.
+    /// White lattice dots plus a round marker per any-shape clue.
     dots: Gm<InstancedMesh, ColorMaterial>,
-    floor: Gm<Mesh, PhysicalMaterial>,
+    /// A small cuboid in the clue's shape per shaped clue. A block hides its own clue's marker.
+    markers: Gm<InstancedMesh, PhysicalMaterial>,
     blocks_mesh: Gm<InstancedMesh, PhysicalMaterial>,
     blocks: Vec<Block>,
     preview: Gm<Mesh, ColorMaterial>,
     preview_on: bool,
+    /// The cell a click would pick, while no button is down.
+    hover: Option<Cell>,
+    hover_mesh: Gm<Mesh, ColorMaterial>,
     ambient: AmbientLight,
     sun: DirectionalLight,
     puzzle: Puzzle,
@@ -119,35 +129,31 @@ impl Game {
             100.0,
         );
         let cube = CpuMesh::cube();
-        let cell_poses: Vec<Pose> = (0..CELLS)
-            .map(|i| Pose {
-                center: cell_center(cell_at(i)),
-                half: [0.5; 3],
-            })
-            .collect();
         let lines = grid_lines();
         let mut game = Game {
-            cells: instanced(&context, &cube, &cell_poses, vec![Srgba::WHITE; CELLS]),
             wires: Gm::new(
                 instanced(&context, &cube, &lines, vec![Srgba::WHITE; lines.len()]),
-                unlit(&context),
+                see_through(&context, WIRE_ALPHA),
             ),
             dots: Gm::new(dots_mesh(&context, &puzzle), unlit(&context)),
-            floor: floor_mesh(&context),
+            markers: markers_mesh(&context, &puzzle),
             blocks_mesh: Gm::new(
                 instanced(&context, &cube, &[], Vec::new()),
                 block_material(&context),
             ),
             blocks: Vec::new(),
-            preview: preview_mesh(&context),
+            preview: translucent(&context, 90),
             preview_on: false,
+            hover: None,
+            hover_mesh: translucent(&context, 40),
             ambient: AmbientLight::new(&context, 0.6, Srgba::WHITE),
             sun: DirectionalLight::new(&context, 1.2, Srgba::WHITE, vec3(-0.5, -1.0, -0.7)),
             board: Board::new(puzzle.clues.clone()),
             canvas,
             camera,
-            yaw: 0.7,
-            pitch: 0.6,
+            // Off the cube's diagonal, so no two cell centres line up on screen.
+            yaw: 0.65,
+            pitch: 0.4,
             context,
             puzzle,
             input: Input::default(),
@@ -168,12 +174,16 @@ impl Game {
         let (w, h) = (self.canvas.width(), self.canvas.height());
         self.camera.set_viewport(Viewport::new_at_origo(w, h));
         let mut objects: Vec<&dyn Object> =
-            vec![&self.floor, &self.wires, &self.dots, &self.blocks_mesh];
+            vec![&self.wires, &self.dots, &self.markers, &self.blocks_mesh];
         if self.preview_on {
             objects.push(&self.preview);
         }
+        if self.hover.is_some() {
+            objects.push(&self.hover_mesh);
+        }
         RenderTarget::screen(&self.context, w, h)
-            .clear(ClearState::color_and_depth(0.0, 0.0, 0.0, 0.0, 1.0))
+            // Opaque black: faint lines blend against it, not against a see-through canvas.
+            .clear(ClearState::color_and_depth(0.0, 0.0, 0.0, 1.0, 1.0))
             .render(&self.camera, objects, &[&self.ambient, &self.sun]);
     }
 
@@ -203,25 +213,24 @@ impl Game {
             .collect()
     }
 
-    /// Returns true when the board changed: a press on a block removes it.
-    pub fn pointer_down(&mut self, x: f32, y: f32) -> bool {
+    pub fn pointer_down(&mut self, x: f32, y: f32) {
         let target = self.target(x, y);
-        if let Target::Block(c) = target {
-            self.remove(c);
-        }
         self.input.down((x, y), target);
-        matches!(target, Target::Block(_))
+        self.set_hover(None);
     }
 
-    /// Returns true when the scene needs a redraw.
-    pub fn pointer_move(&mut self, x: f32, y: f32) -> bool {
-        // The GPU pick only runs while a build is being dragged.
+    /// `t` is the event's timestamp in ms. Returns true when the scene needs a redraw.
+    pub fn pointer_move(&mut self, x: f32, y: f32, t: f64) -> bool {
+        if !self.input.pressed() {
+            return self.set_hover(self.pick_cell(x, y));
+        }
+        // Where the pointer is only matters while a build is being dragged.
         let hover = if self.input.building() {
             self.pick_cell(x, y)
         } else {
             None
         };
-        match self.input.moved((x, y), hover) {
+        match self.input.moved((x, y), hover, t) {
             Moved::Orbit { dx, dy } => {
                 self.yaw -= dx * ORBIT_SPEED;
                 self.pitch = (self.pitch + dy * ORBIT_SPEED).clamp(PITCH_RANGE.0, PITCH_RANGE.1);
@@ -238,24 +247,33 @@ impl Game {
 
     /// Returns true when the board changed.
     pub fn pointer_up(&mut self, x: f32, y: f32) -> bool {
-        let hover = if self.input.building() {
-            self.pick_cell(x, y)
-        } else {
-            None
-        };
         // A box that breaks the rules is simply not built.
-        let changed = match self.input.up(hover) {
+        let changed = match self.input.up(self.pick_cell(x, y)) {
             Released::Place(r) => self.place(r),
+            Released::Remove(r) => self.remove(r.min),
+            Released::Replace { old, new } => self.extend(old, new),
             Released::Nothing => false,
         };
         // The first corner of a click-click box shows as a one-cell preview.
         self.set_preview(self.input.pending().map(|c| BoxRegion::spanning(c, c)));
+        self.set_hover(self.pick_cell(x, y));
         changed
     }
 
     pub fn pointer_cancel(&mut self) {
         self.input.cancel();
         self.set_preview(None);
+        self.set_hover(None);
+    }
+
+    /// Returns true when the scene needs a redraw.
+    pub fn pointer_leave(&mut self) -> bool {
+        self.set_hover(None)
+    }
+
+    /// Whether the pointer is over a cell a click would pick.
+    pub fn hovering(&self) -> bool {
+        self.hover.is_some()
     }
 
     pub fn box_count(&self) -> u32 {
@@ -289,8 +307,8 @@ impl Game {
         true
     }
 
-    fn remove(&mut self, cell: Cell) {
-        self.board.remove_at(cell);
+    /// Returns true when a box was removed.
+    fn remove(&mut self, cell: Cell) -> bool {
         if let Some(b) = self
             .blocks
             .iter_mut()
@@ -298,6 +316,23 @@ impl Game {
         {
             b.dismiss();
         }
+        self.board.remove_at(cell)
+    }
+
+    /// Grows box `old` into `new` if the rules allow it; the block tweens to its new size.
+    fn extend(&mut self, old: BoxRegion, new: BoxRegion) -> bool {
+        if new == old || self.board.replace(old, new).is_err() {
+            return false;
+        }
+        if let Some(b) = self
+            .blocks
+            .iter_mut()
+            .find(|b| !b.removing && b.region == old)
+        {
+            b.region = new;
+            b.anim.retarget(block_pose(&new));
+        }
+        true
     }
 
     fn sync_blocks(&mut self) {
@@ -320,34 +355,60 @@ impl Game {
     fn set_preview(&mut self, r: Option<BoxRegion>) {
         self.preview_on = r.is_some();
         if let Some(r) = r {
-            self.preview.set_transformation(transform(&block_pose(&r)));
+            // A hair bigger than the block, so it never z-fights the block it extends.
+            let p = block_pose(&r);
+            self.preview.set_transformation(transform(&Pose {
+                half: p.half.map(|h| h + 0.02),
+                ..p
+            }));
         }
+    }
+
+    /// Returns true when the highlighted cell changed.
+    fn set_hover(&mut self, cell: Option<Cell>) -> bool {
+        if cell == self.hover {
+            return false;
+        }
+        self.hover = cell;
+        if let Some(c) = cell {
+            self.hover_mesh.set_transformation(transform(&Pose {
+                center: cell_center(c),
+                half: [0.5; 3],
+            }));
+        }
+        true
     }
 
     fn target(&self, x: f32, y: f32) -> Target {
-        if !self.interactive {
-            return Target::Nothing;
-        }
         match self.pick_cell(x, y) {
             None => Target::Nothing,
-            Some(c) if self.board.box_at(c).is_some() => Target::Block(c),
-            Some(c) => Target::Empty(c),
+            Some(c) => match self.board.box_at(c) {
+                Some(i) => Target::Block {
+                    cell: c,
+                    region: self.board.boxes()[i],
+                },
+                None => Target::Empty(c),
+            },
         }
     }
 
+    /// The cell under the pointer (CSS px); none on the answer page.
     fn pick_cell(&self, x: f32, y: f32) -> Option<Cell> {
+        if !self.interactive {
+            return None;
+        }
+        let (origin, dir) = self.ray(x, y);
+        pick(origin, dir, self.board.boxes())
+    }
+
+    /// The camera ray through a point on the canvas (CSS px).
+    fn ray(&self, x: f32, y: f32) -> ([f32; 3], [f32; 3]) {
         let s = self.scale();
         let pixel = (x * s, self.canvas.height() as f32 - y * s);
-        let hit = pick(
-            &self.context,
-            &self.camera,
-            pixel,
-            [&self.cells],
-            Cull::Back,
+        (
+            self.camera.position_at_pixel(pixel).into(),
+            self.camera.view_direction_at_pixel(pixel).into(),
         )
-        .ok()
-        .flatten()?;
-        Some(cell_at(hit.instance_id as usize))
     }
 
     /// Physical pixels per CSS pixel of the canvas.
@@ -409,6 +470,7 @@ fn unlit(context: &Context) -> ColorMaterial {
     )
 }
 
+/// White lattice dots, plus a round marker for each clue that allows any shape.
 fn dots_mesh(context: &Context, puzzle: &Puzzle) -> InstancedMesh {
     let mut poses: Vec<Pose> = lattice_dots()
         .into_iter()
@@ -419,35 +481,33 @@ fn dots_mesh(context: &Context, puzzle: &Puzzle) -> InstancedMesh {
         .collect();
     let mut colors = vec![Srgba::WHITE; poses.len()];
     for (i, clue) in puzzle.clues.iter().enumerate() {
-        poses.push(Pose {
-            center: cell_center(clue.cell),
-            half: [MARK_R; 3],
-        });
-        colors.push(PALETTE[i % PALETTE.len()]);
+        if clue.shape.is_none() {
+            poses.push(Pose {
+                center: cell_center(clue.cell),
+                half: [MARK_R; 3],
+            });
+            colors.push(PALETTE[i % PALETTE.len()]);
+        }
     }
     instanced(context, &CpuMesh::sphere(12), &poses, colors)
 }
 
-/// Dark ground just below the bottom layer; it receives the blocks' shadows.
-fn floor_mesh(context: &Context) -> Gm<Mesh, PhysicalMaterial> {
-    let mut floor = Gm::new(
-        Mesh::new(context, &CpuMesh::square()),
-        PhysicalMaterial::new_opaque(
-            context,
-            &CpuMaterial {
-                albedo: Srgba::new_opaque(0x27, 0x27, 0x2a),
-                roughness: 1.0,
-                metallic: 0.0,
-                ..Default::default()
-            },
-        ),
-    );
-    floor.set_transformation(
-        Mat4::from_translation(vec3(0.0, -4.3, 0.0))
-            * Mat4::from_angle_x(Deg(-90.0))
-            * Mat4::from_scale(5.0),
-    );
-    floor
+/// A small lit cuboid in its box's shape for each clue that names one.
+fn markers_mesh(context: &Context, puzzle: &Puzzle) -> Gm<InstancedMesh, PhysicalMaterial> {
+    let (mut poses, mut colors) = (Vec::new(), Vec::new());
+    for (i, clue) in puzzle.clues.iter().enumerate() {
+        if let Some(shape) = clue.shape {
+            poses.push(Pose {
+                center: cell_center(clue.cell),
+                half: marker_half(shape),
+            });
+            colors.push(PALETTE[i % PALETTE.len()]);
+        }
+    }
+    Gm::new(
+        instanced(context, &CpuMesh::cube(), &poses, colors),
+        block_material(context),
+    )
 }
 
 /// White, lit, and tinted per instance by the clue colour.
@@ -463,17 +523,23 @@ fn block_material(context: &Context) -> PhysicalMaterial {
     )
 }
 
-/// The translucent box under a drag, or the pending first corner of a click-click box.
-fn preview_mesh(context: &Context) -> Gm<Mesh, ColorMaterial> {
+/// A see-through white box: the preview under a drag, the pending first corner of a
+/// click-click box, or the hovered cell.
+fn translucent(context: &Context, alpha: u8) -> Gm<Mesh, ColorMaterial> {
     Gm::new(
         Mesh::new(context, &CpuMesh::cube()),
-        ColorMaterial::new_transparent(
-            context,
-            &CpuMaterial {
-                albedo: Srgba::new(255, 255, 255, 90),
-                ..Default::default()
-            },
-        ),
+        see_through(context, alpha),
+    )
+}
+
+/// Flat white at opacity `alpha`, multiplied by each instance's colour.
+fn see_through(context: &Context, alpha: u8) -> ColorMaterial {
+    ColorMaterial::new_transparent(
+        context,
+        &CpuMaterial {
+            albedo: Srgba::new(255, 255, 255, alpha),
+            ..Default::default()
+        },
     )
 }
 
