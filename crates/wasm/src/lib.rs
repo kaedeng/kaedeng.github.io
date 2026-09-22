@@ -62,6 +62,8 @@ pub struct Game {
 #[wasm_bindgen]
 impl Game {
     /// `answer = true` shows the stored solution and ignores input.
+    // three-d wants an Arc'd context; WebGL is single-threaded, so Send/Sync never matters here.
+    #[allow(clippy::arc_with_non_send_sync)]
     #[wasm_bindgen(constructor)]
     pub fn new(
         canvas: HtmlCanvasElement,
