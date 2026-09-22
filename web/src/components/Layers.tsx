@@ -1,7 +1,8 @@
 import {
-  boxColor,
   boxIndexAt,
   clueAt,
+  clueColor,
+  clueIndexOf,
   clueText,
   type Puzzle,
 } from "@/lib/puzzle";
@@ -26,11 +27,17 @@ export function Layers({
                 const box = showSolution
                   ? boxIndexAt(puzzle.solution, [x, y, z])
                   : -1;
+                const ci =
+                  box >= 0
+                    ? clueIndexOf(puzzle.solution[box], puzzle.clues)
+                    : clue
+                      ? puzzle.clues.indexOf(clue)
+                      : -1;
                 return (
                   <div
                     key={`${x}-${z}`}
                     className="flex aspect-square items-center justify-center rounded border border-zinc-300 font-mono text-sm"
-                    style={{ background: box >= 0 ? boxColor(box) : undefined }}
+                    style={{ background: ci >= 0 ? clueColor(ci) : undefined }}
                   >
                     {clue ? clueText(clue) : ""}
                   </div>

@@ -12,16 +12,24 @@ export type Puzzle = {
 
 export const puzzle = data as Puzzle;
 
-export function boxIndexAt(boxes: Box[], [x, y, z]: Cell): number {
-  return boxes.findIndex(
-    (b) =>
-      b.min[0] <= x &&
-      x <= b.max[0] &&
-      b.min[1] <= y &&
-      y <= b.max[1] &&
-      b.min[2] <= z &&
-      z <= b.max[2],
+export function contains(b: Box, [x, y, z]: Cell): boolean {
+  return (
+    b.min[0] <= x &&
+    x <= b.max[0] &&
+    b.min[1] <= y &&
+    y <= b.max[1] &&
+    b.min[2] <= z &&
+    z <= b.max[2]
   );
+}
+
+export function boxIndexAt(boxes: Box[], cell: Cell): number {
+  return boxes.findIndex((b) => contains(b, cell));
+}
+
+/** Index into `clues` of the clue inside `box`. */
+export function clueIndexOf(box: Box, clues: Clue[]): number {
+  return clues.findIndex((c) => contains(box, c.cell));
 }
 
 export function clueAt(clues: Clue[], [x, y, z]: Cell): Clue | undefined {
@@ -34,7 +42,7 @@ export function clueText(clue: Clue): string {
   return clue.volume === undefined ? "?" : String(clue.volume);
 }
 
-/** Same colours as PALETTE in crates/wasm/src/lib.rs so the grids match the 3D view. */
+/** Same colours as PALETTE in crates/wasm/src/game.rs so the grids match the 3D view. */
 export const PALETTE = [
   "#f1b1b1",
   "#b1f1c4",
@@ -48,8 +56,12 @@ export const PALETTE = [
   "#b1f1d9",
   "#ecb1f1",
   "#e4f1b1",
+  "#b1cdf1",
+  "#f1d8b1",
+  "#f1b1c2",
+  "#b1f1b1",
 ];
 
-export function boxColor(index: number): string {
-  return PALETTE[index % PALETTE.length];
+export function clueColor(clueIndex: number): string {
+  return PALETTE[clueIndex % PALETTE.length];
 }
