@@ -91,7 +91,8 @@ impl Game {
         );
         let transforms: Vec<Mat4> = (0..CELLS)
             .map(|i| {
-                Mat4::from_translation(Vec3::from(cell_center(cell_at(i)))) * Mat4::from_scale(CELL_SIZE / 2.0)
+                Mat4::from_translation(Vec3::from(cell_center(cell_at(i))))
+                    * Mat4::from_scale(CELL_SIZE / 2.0)
             })
             .collect();
         let mesh = InstancedMesh::new(

@@ -22,7 +22,11 @@ pub struct Anim {
 
 impl Anim {
     pub fn new(from: Pose, to: Pose) -> Self {
-        Self { from, to, t_ms: 0.0 }
+        Self {
+            from,
+            to,
+            t_ms: 0.0,
+        }
     }
 
     pub fn settled(pose: Pose) -> Self {

@@ -3,6 +3,7 @@
 
 pub mod anim;
 pub mod geom;
+pub mod input;
 
 #[cfg(target_arch = "wasm32")]
 pub mod game;
