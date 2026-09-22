@@ -1,4 +1,4 @@
 .DS_Store
 target/
 web/public/wasm/
-web/puzzle.json
+web/src/puzzle.json
