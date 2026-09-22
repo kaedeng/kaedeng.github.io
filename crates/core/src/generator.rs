@@ -53,18 +53,20 @@ fn fitting_boxes(origin: Cell, free: u64) -> Vec<BoxRegion> {
     v
 }
 
-/// One clue per box, at a random cell inside it; about a third start hidden.
+/// One clue per box, at a random cell inside it; about a third of volumes and a third of
+/// shapes start hidden.
 fn initial_clues(partition: &[BoxRegion], rng: &mut Rng) -> Vec<Clue> {
     partition
         .iter()
         .map(|b| {
             let cell = random_cell_in(b, rng);
-            let volume = if rng.chance(1, 3) {
-                None
-            } else {
-                Some(b.volume())
-            };
-            Clue { cell, volume }
+            let volume = (!rng.chance(1, 3)).then(|| b.volume());
+            let shape = (!rng.chance(1, 3)).then(|| b.shape());
+            Clue {
+                cell,
+                volume,
+                shape,
+            }
         })
         .collect()
 }
@@ -77,8 +79,8 @@ fn random_cell_in(b: &BoxRegion, rng: &mut Rng) -> Cell {
     cell
 }
 
-/// Reveal hidden volumes until only the partition solves the clues.
-/// Returns false when the two remaining solutions differ only at revealed clues.
+/// Reveal hidden shapes and volumes until only the partition solves the clues.
+/// Returns false when the two remaining solutions differ only at fully revealed clues.
 fn make_unique(partition: &[BoxRegion], clues: &mut [Clue]) -> bool {
     loop {
         let sols = solve(clues, 2);
@@ -92,13 +94,22 @@ fn make_unique(partition: &[BoxRegion], clues: &mut [Clue]) -> bool {
         let Some(i) = differing_hidden_clue(clues, &sols[0], &sols[1]) else {
             return false;
         };
-        clues[i].volume = Some(partition[i].volume());
+        reveal(&mut clues[i], &partition[i]);
+    }
+}
+
+/// Reveals the clue's shape, or its volume once the shape is known.
+fn reveal(clue: &mut Clue, b: &BoxRegion) {
+    if clue.shape.is_none() {
+        clue.shape = Some(b.shape());
+    } else {
+        clue.volume = Some(b.volume());
     }
 }
 
 fn differing_hidden_clue(clues: &[Clue], a: &[BoxRegion], b: &[BoxRegion]) -> Option<usize> {
     (0..clues.len()).find(|&i| {
-        clues[i].volume.is_none()
+        (clues[i].volume.is_none() || clues[i].shape.is_none())
             && box_containing(a, clues[i].cell) != box_containing(b, clues[i].cell)
     })
 }
@@ -169,6 +180,7 @@ mod tests {
                 assert!(b.contains(clue.cell), "seed {seed}");
                 assert!(b.volume() <= MAX_VOLUME, "seed {seed}");
                 assert!(clue.volume.is_none_or(|v| v == b.volume()), "seed {seed}");
+                assert!(clue.shape.is_none_or(|s| s == b.shape()), "seed {seed}");
             }
             // The solution tiles the cube exactly.
             let (mut cover, mut overlap) = (0u64, false);
@@ -200,6 +212,16 @@ mod tests {
             .map(|s| generate(&s.to_string()))
             .flat_map(|p| p.clues)
             .filter(|c| c.volume.is_none())
+            .count();
+        assert!(hidden > 0);
+    }
+
+    #[test]
+    fn some_shapes_are_hidden() {
+        let hidden = (0..20)
+            .map(|s| generate(&s.to_string()))
+            .flat_map(|p| p.clues)
+            .filter(|c| c.shape.is_none())
             .count();
         assert!(hidden > 0);
     }

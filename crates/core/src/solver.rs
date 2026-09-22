@@ -28,7 +28,7 @@ pub fn solve(clues: &[Clue], limit: usize) -> Vec<Vec<BoxRegion>> {
     search.found
 }
 
-/// Every box that holds exactly one clue and matches its volume, if given.
+/// Every box that holds exactly one clue and matches its volume and shape, if given.
 fn candidates(clues: &[Clue]) -> Vec<Cand> {
     let mut out = Vec::new();
     for region in all_regions() {
@@ -38,7 +38,9 @@ fn candidates(clues: &[Clue]) -> Vec<Cand> {
         let [clue] = inside[..] else {
             continue;
         };
-        if clues[clue].volume.is_some_and(|v| v != region.volume()) {
+        if clues[clue].volume.is_some_and(|v| v != region.volume())
+            || clues[clue].shape.is_some_and(|s| s != region.shape())
+        {
             continue;
         }
         out.push(Cand {
@@ -126,6 +128,7 @@ impl Search<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Shape;
 
     fn sorted(mut v: Vec<BoxRegion>) -> Vec<BoxRegion> {
         v.sort();
@@ -146,6 +149,7 @@ mod tests {
             .map(|z| Clue {
                 cell: [0, 0, z],
                 volume,
+                shape: None,
             })
             .collect()
     }
@@ -164,20 +168,36 @@ mod tests {
         assert_eq!(solve(&slab_clues(None), 2).len(), 1);
     }
 
-    #[test]
-    fn two_box_split_is_ambiguous() {
-        let clues = vec![
+    fn two_box_split(shape: Option<Shape>) -> Vec<Clue> {
+        vec![
             Clue {
                 cell: [0, 0, 0],
                 volume: Some(16),
+                shape,
             },
             Clue {
                 cell: [3, 3, 3],
                 volume: Some(48),
+                shape: None,
             },
-        ];
+        ]
+    }
+
+    #[test]
+    fn two_box_split_is_ambiguous() {
+        let clues = two_box_split(None);
         assert_eq!(solve(&clues, 2).len(), 2);
         assert_eq!(solve(&clues, 10).len(), 3); // split at 1 along x, y or z
+    }
+
+    #[test]
+    fn shape_picks_the_split() {
+        let sols = solve(&two_box_split(Some(Shape::Flat)), 10);
+        assert_eq!(sols.len(), 1);
+        assert!(sols[0].contains(&BoxRegion {
+            min: [0, 0, 0],
+            max: [3, 0, 3]
+        }));
     }
 
     #[test]
@@ -185,6 +205,7 @@ mod tests {
         let clues = vec![Clue {
             cell: [0, 0, 0],
             volume: Some(63),
+            shape: None,
         }];
         assert!(solve(&clues, 2).is_empty());
     }

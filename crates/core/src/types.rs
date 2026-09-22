@@ -47,6 +47,17 @@ impl BoxRegion {
             .product::<u32>() as u8
     }
 
+    /// Which of its axes are longest, as a `Shape`.
+    pub fn shape(&self) -> Shape {
+        let size: [u8; 3] = std::array::from_fn(|i| self.max[i] - self.min[i] + 1);
+        let top = size[0].max(size[1]).max(size[2]);
+        let longest = size.map(|s| s == top);
+        Shape::ALL
+            .into_iter()
+            .find(|s| s.longest() == longest)
+            .expect("some axis is always longest")
+    }
+
     /// One bit per cell inside the box.
     pub fn mask(&self) -> u64 {
         let mut m = 0u64;
@@ -61,12 +72,60 @@ impl BoxRegion {
     }
 }
 
+/// A box's longest axes: Patches' square / tall / wide, in 3D. y is up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape {
+    /// x, y and z are equal.
+    Cube,
+    /// y alone is longest.
+    Tall,
+    /// x alone is longest.
+    BarX,
+    /// z alone is longest.
+    BarZ,
+    /// x and z tie for longest: it lies flat.
+    Flat,
+    /// x and y tie for longest: a wall running along x.
+    WallX,
+    /// y and z tie for longest: a wall running along z.
+    WallZ,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 7] = [
+        Shape::Cube,
+        Shape::Tall,
+        Shape::BarX,
+        Shape::BarZ,
+        Shape::Flat,
+        Shape::WallX,
+        Shape::WallZ,
+    ];
+
+    /// Whether x, y and z are among the longest axes.
+    pub fn longest(self) -> [bool; 3] {
+        match self {
+            Shape::Cube => [true, true, true],
+            Shape::Tall => [false, true, false],
+            Shape::BarX => [true, false, false],
+            Shape::BarZ => [false, false, true],
+            Shape::Flat => [true, false, true],
+            Shape::WallX => [true, true, false],
+            Shape::WallZ => [false, true, true],
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Clue {
     pub cell: Cell,
     /// `None` is shown as "?": the player has to infer the box size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
+    /// `None` means any shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Shape>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +175,33 @@ mod tests {
     }
 
     #[test]
+    fn shape_names_the_longest_axes() {
+        let from_origin = |max: Cell| BoxRegion {
+            min: [0, 0, 0],
+            max,
+        };
+        assert_eq!(from_origin([0, 0, 0]).shape(), Shape::Cube);
+        assert_eq!(from_origin([1, 1, 1]).shape(), Shape::Cube);
+        assert_eq!(from_origin([1, 2, 1]).shape(), Shape::Tall);
+        assert_eq!(from_origin([2, 0, 0]).shape(), Shape::BarX);
+        assert_eq!(from_origin([1, 0, 2]).shape(), Shape::BarZ);
+        assert_eq!(from_origin([2, 1, 2]).shape(), Shape::Flat);
+        assert_eq!(from_origin([1, 1, 0]).shape(), Shape::WallX);
+        assert_eq!(from_origin([0, 3, 3]).shape(), Shape::WallZ);
+    }
+
+    #[test]
+    fn every_shape_is_the_shape_of_its_own_longest_axes() {
+        for s in Shape::ALL {
+            let b = BoxRegion {
+                min: [0, 0, 0],
+                max: s.longest().map(u8::from),
+            };
+            assert_eq!(b.shape(), s);
+        }
+    }
+
+    #[test]
     fn index_roundtrips() {
         for i in 0..CELLS {
             assert_eq!(index(cell_at(i)), i);
@@ -131,10 +217,12 @@ mod tests {
                 Clue {
                     cell: [0, 0, 0],
                     volume: Some(16),
+                    shape: Some(Shape::WallX),
                 },
                 Clue {
                     cell: [1, 1, 1],
                     volume: None,
+                    shape: None,
                 },
             ],
             solution: vec![BoxRegion {
@@ -144,6 +232,7 @@ mod tests {
         };
         let json = serde_json::to_string(&p).unwrap();
         assert!(!json.contains("null"));
+        assert!(json.contains(r#""shape":"wall_x""#));
         assert_eq!(serde_json::from_str::<Puzzle>(&json).unwrap(), p);
     }
 }

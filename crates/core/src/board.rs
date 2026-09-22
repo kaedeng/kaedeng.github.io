@@ -1,13 +1,15 @@
-use crate::types::{BoxRegion, Cell, Clue};
+use crate::types::{BoxRegion, Cell, Clue, Shape};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
     Overlap,
     ClueCount(usize),
     Volume { expected: u8, got: u8 },
+    Shape { expected: Shape, got: Shape },
 }
 
-/// The Patches rules for one box: no overlap, exactly one clue inside, volume matches that clue.
+/// The Patches rules for one box: no overlap, exactly one clue inside, and its volume and
+/// shape match that clue where the clue gives them.
 pub fn check(clues: &[Clue], placed: u64, candidate: &BoxRegion) -> Result<(), Rejection> {
     if candidate.mask() & placed != 0 {
         return Err(Rejection::Overlap);
@@ -19,10 +21,19 @@ pub fn check(clues: &[Clue], placed: u64, candidate: &BoxRegion) -> Result<(), R
     if inside.len() != 1 {
         return Err(Rejection::ClueCount(inside.len()));
     }
-    match inside[0].volume {
-        Some(expected) if expected != candidate.volume() => Err(Rejection::Volume {
+    let clue = inside[0];
+    if let Some(expected) = clue.volume
+        && expected != candidate.volume()
+    {
+        return Err(Rejection::Volume {
             expected,
             got: candidate.volume(),
+        });
+    }
+    match clue.shape {
+        Some(expected) if expected != candidate.shape() => Err(Rejection::Shape {
+            expected,
+            got: candidate.shape(),
         }),
         _ => Ok(()),
     }
@@ -103,6 +114,7 @@ mod tests {
             .map(|z| Clue {
                 cell: [0, 0, z],
                 volume: Some(16),
+                shape: None,
             })
             .collect()
     }
@@ -154,8 +166,28 @@ mod tests {
         let mut hidden = Board::new(vec![Clue {
             cell: [0, 0, 0],
             volume: None,
+            shape: None,
         }]);
         assert_eq!(hidden.place(half), Ok(()));
+    }
+
+    #[test]
+    fn rejects_wrong_shape() {
+        let clue = |shape| {
+            vec![Clue {
+                cell: [0, 0, 0],
+                volume: None,
+                shape: Some(shape),
+            }]
+        };
+        assert_eq!(
+            Board::new(clue(Shape::Tall)).place(slab(0)),
+            Err(Rejection::Shape {
+                expected: Shape::Tall,
+                got: Shape::WallX
+            })
+        );
+        assert_eq!(Board::new(clue(Shape::WallX)).place(slab(0)), Ok(()));
     }
 
     #[test]
