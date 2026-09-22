@@ -2,7 +2,10 @@ import data from "@/puzzle.json";
 
 export type Cell = [number, number, number];
 export type Box = { min: Cell; max: Cell };
-export type Clue = { cell: Cell; volume?: number };
+/** Which axes of a box are longest (y is up); same as Shape in crates/core/src/types.rs. */
+export type Shape =
+  "cube" | "tall" | "bar_x" | "bar_z" | "flat" | "wall_x" | "wall_z";
+export type Clue = { cell: Cell; volume?: number; shape?: Shape };
 export type Puzzle = {
   id: string;
   size: number;
@@ -41,6 +44,27 @@ export function clueAt(clues: Clue[], [x, y, z]: Cell): Clue | undefined {
 export function clueText(clue: Clue): string {
   return clue.volume === undefined ? "?" : String(clue.volume);
 }
+
+export const SHAPE_NAME: Record<Shape, string> = {
+  cube: "cube",
+  tall: "tall block",
+  bar_x: "bar along x",
+  bar_z: "bar along z",
+  flat: "flat block",
+  wall_x: "wall along x",
+  wall_z: "wall along z",
+};
+
+/** A box of each shape, in cells: its longest axes are 2, the others 1. */
+export const SHAPE_SIZE: Record<Shape, Cell> = {
+  cube: [1, 1, 1],
+  tall: [1, 2, 1],
+  bar_x: [2, 1, 1],
+  bar_z: [1, 1, 2],
+  flat: [2, 1, 2],
+  wall_x: [2, 2, 1],
+  wall_z: [1, 2, 2],
+};
 
 /** Same colours as PALETTE in crates/wasm/src/game.rs so the grids match the 3D view. */
 export const PALETTE = [

@@ -6,6 +6,7 @@ import {
   clueText,
   type Puzzle,
 } from "@/lib/puzzle";
+import { ShapeIcon } from "@/components/ShapeIcon";
 
 /** The cube as horizontal layers (y = 0 is the bottom). Columns are x, rows are z. */
 export function Layers({
@@ -36,9 +37,10 @@ export function Layers({
                 return (
                   <div
                     key={`${x}-${z}`}
-                    className="flex aspect-square items-center justify-center rounded border border-zinc-300 font-mono text-sm"
+                    className="flex aspect-square flex-col items-center justify-center rounded border border-zinc-300 font-mono text-sm leading-none"
                     style={{ background: ci >= 0 ? clueColor(ci) : undefined }}
                   >
+                    {clue?.shape && <ShapeIcon shape={clue.shape} />}
                     {clue ? clueText(clue) : ""}
                   </div>
                 );
