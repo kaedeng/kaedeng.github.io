@@ -3,14 +3,14 @@
 
 use std::sync::Arc;
 
-use patches_core::{Board, BoxRegion, CELLS, Cell, N, Puzzle, cell_at};
+use patches_core::{Board, BoxRegion, CELLS, Cell, Puzzle, cell_at};
 use three_d::*;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
+use crate::geom::cell_center;
+
 const CELL_SIZE: f32 = 0.72;
-/// Vertical distance between layers, in cell units, so every layer's top faces stay visible.
-const LAYER_PITCH: f32 = 2.5;
 const CAMERA_DISTANCE: f32 = 24.0;
 /// Pointer travel (CSS px) below which a press counts as a click, not an orbit drag.
 const CLICK_SLOP: f32 = 5.0;
@@ -91,7 +91,7 @@ impl Game {
         );
         let transforms: Vec<Mat4> = (0..CELLS)
             .map(|i| {
-                Mat4::from_translation(cell_center(cell_at(i))) * Mat4::from_scale(CELL_SIZE / 2.0)
+                Mat4::from_translation(Vec3::from(cell_center(cell_at(i)))) * Mat4::from_scale(CELL_SIZE / 2.0)
             })
             .collect();
         let mesh = InstancedMesh::new(
@@ -157,7 +157,7 @@ impl Game {
             .clues
             .iter()
             .flat_map(|c| {
-                let top = cell_center(c.cell) + vec3(0.0, CELL_SIZE / 2.0, 0.0);
+                let top = Vec3::from(cell_center(c.cell)) + vec3(0.0, CELL_SIZE / 2.0, 0.0);
                 let p = self.camera.pixel_at_position(top);
                 [p.x / s, (h - p.y) / s]
             })
@@ -279,16 +279,6 @@ impl Game {
             ..Default::default()
         });
     }
-}
-
-/// World position of a cell's centre: x and z on a unit grid, y stretched by `LAYER_PITCH`.
-fn cell_center(c: Cell) -> Vec3 {
-    let mid = (N as f32 - 1.0) / 2.0;
-    vec3(
-        c[0] as f32 - mid,
-        (c[1] as f32 - mid) * LAYER_PITCH,
-        c[2] as f32 - mid,
-    )
 }
 
 fn err(e: impl std::fmt::Display) -> JsValue {
