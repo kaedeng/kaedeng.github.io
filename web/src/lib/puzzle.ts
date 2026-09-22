@@ -34,7 +34,22 @@ export function clueText(clue: Clue): string {
   return clue.volume === undefined ? "?" : String(clue.volume);
 }
 
-/** Distinct pastel per box index; golden-angle hue steps keep neighbours apart. */
+/** Same colours as PALETTE in crates/wasm/src/lib.rs so the grids match the 3D view. */
+export const PALETTE = [
+  "#f1b1b1",
+  "#b1f1c4",
+  "#d6b1f1",
+  "#f1e9b1",
+  "#b1e6f1",
+  "#f1b1d4",
+  "#c1f1b1",
+  "#b4b1f1",
+  "#f1c6b1",
+  "#b1f1d9",
+  "#ecb1f1",
+  "#e4f1b1",
+];
+
 export function boxColor(index: number): string {
-  return `hsl(${(index * 137.508) % 360} 70% 82%)`;
+  return PALETTE[index % PALETTE.length];
 }

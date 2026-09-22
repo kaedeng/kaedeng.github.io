@@ -21,7 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - uses: pnpm/action-setup@v6
@@ -34,7 +39,7 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
-      - run: pnpm gen
+      - run: pnpm gen && pnpm wasm
         working-directory: web
         env:
           SEED: ${{ inputs.seed }}
