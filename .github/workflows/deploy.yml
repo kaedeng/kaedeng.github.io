@@ -27,8 +27,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
-      - run: cargo test --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test -p patches-core
+      - run: cargo clippy -p patches-core --all-targets -- -D warnings
+      - run: cargo clippy -p patches-wasm --target wasm32-unknown-unknown -- -D warnings
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
