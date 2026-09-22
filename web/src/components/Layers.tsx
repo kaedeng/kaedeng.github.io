@@ -37,17 +37,17 @@ export function Layers({
                 return (
                   <div
                     key={`${x}-${z}`}
-                    className="flex aspect-square flex-col items-center justify-center rounded border border-zinc-300 font-mono text-sm leading-none"
+                    className={`flex aspect-square flex-col items-center justify-center rounded border border-white/10 font-mono text-sm leading-none ${ci >= 0 ? "text-black" : ""}`}
                     style={{ background: ci >= 0 ? clueColor(ci) : undefined }}
                   >
-                    {clue?.shape && <ShapeIcon shape={clue.shape} />}
+                    {clue && <ShapeIcon shape={clue.shape} />}
                     {clue ? clueText(clue) : ""}
                   </div>
                 );
               }),
             )}
           </div>
-          <figcaption className="mt-2 text-center text-sm text-zinc-500">
+          <figcaption className="mt-2 text-center text-sm text-zinc-400">
             Layer {y + 1}
           </figcaption>
         </figure>

@@ -25,21 +25,27 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col font-sans">
-        <header className="mx-auto flex w-full max-w-3xl items-baseline justify-between px-6 py-8">
-          <Link href="/" className="text-2xl font-bold tracking-tight">
+      <body className="flex min-h-full flex-col font-sans text-lg leading-relaxed">
+        <header className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-8">
+          <Link href="/" className="font-semibold tracking-tight">
             3D Patches
           </Link>
-          <nav className="flex gap-6 text-sm">
-            <Link href="/">Game</Link>
-            <Link href="/answer">Answer</Link>
-            <a href="https://github.com/kaedeng">GitHub</a>
+          <nav className="flex gap-6 text-sm text-zinc-400">
+            <Link href="/" className="hover:text-white">
+              Game
+            </Link>
+            <Link href="/answer" className="hover:text-white">
+              Answer
+            </Link>
+            <a href="https://github.com/kaedeng" className="hover:text-white">
+              GitHub
+            </a>
           </nav>
         </header>
-        <main className="mx-auto w-full max-w-3xl flex-1 px-6 pb-16">
+        <main className="mx-auto w-full max-w-3xl flex-1 px-6 pt-8 pb-24">
           {children}
         </main>
-        <footer className="mx-auto w-full max-w-3xl px-6 py-8 text-sm text-zinc-500">
+        <footer className="mx-auto w-full max-w-3xl px-6 py-8 text-sm text-zinc-400">
           Made by Kae. Rust + WebAssembly + Next.js. New puzzle every Monday.
         </footer>
       </body>

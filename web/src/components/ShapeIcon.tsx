@@ -4,8 +4,19 @@ const COS30 = Math.cos(Math.PI / 6);
 /** Shading of the top, +x and +z faces. */
 const FILL = [0.5, 0.25, 0.1];
 
-/** Isometric sketch of a box of `shape`, seen from +x +y +z like the 3D board's starting view. */
-export function ShapeIcon({ shape }: { shape: Shape }) {
+/**
+ * Isometric sketch of a box of `shape`, seen from +x +y +z like the 3D board's starting
+ * view. No shape draws the round marker of a clue that allows any shape.
+ */
+export function ShapeIcon({ shape }: { shape?: Shape }) {
+  if (!shape) {
+    return (
+      <svg viewBox="-2.2 -2.2 4.4 4.4" className="h-5 w-5" role="img">
+        <title>any shape</title>
+        <circle r={0.9} fill="currentColor" fillOpacity={0.5} />
+      </svg>
+    );
+  }
   const [X, Y, Z] = SHAPE_SIZE[shape];
   // Centred on the box's middle; x runs right-down, z left-down, y up.
   const p = (x: number, y: number, z: number) =>
