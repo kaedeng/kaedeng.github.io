@@ -65,6 +65,15 @@ impl Board {
         self.boxes.iter().position(|b| b.contains(cell))
     }
 
+    /// Index into `clues()` of the one clue inside placed box `box_index`.
+    pub fn clue_of(&self, box_index: usize) -> usize {
+        let b = &self.boxes[box_index];
+        self.clues
+            .iter()
+            .position(|c| b.contains(c.cell))
+            .expect("a placed box holds exactly one clue")
+    }
+
     pub fn remove_at(&mut self, cell: Cell) -> bool {
         let Some(i) = self.box_at(cell) else {
             return false;
@@ -168,5 +177,14 @@ mod tests {
         b.clear();
         assert!(b.boxes().is_empty());
         assert_eq!(b.place(slab(1)), Ok(()));
+    }
+
+    #[test]
+    fn clue_of_finds_the_clue_inside_each_box() {
+        let mut b = Board::new(slab_clues());
+        b.place(slab(2)).unwrap();
+        b.place(slab(0)).unwrap();
+        assert_eq!(b.clue_of(0), 2);
+        assert_eq!(b.clue_of(1), 0);
     }
 }
