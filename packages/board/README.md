@@ -48,7 +48,7 @@ Coordinates are CSS px from the canvas's top-left, and `time` is in ms like `eve
 - `puzzle` is the JSON printed by `cargo run -p patches-core --bin generate -- <id>` (type `Puzzle`). An id is a seed, plus `-easy` or `-hard` for those levels (`a3f9c1-hard`); a bare seed is Medium.
 - `answer: true` shows the stored solution; the cube still turns and zooms.
 - The canvas should fill a positioned parent. Clue labels, the vim mode line, the view cube (top right; a face shows that layer in 2D) and the 2D layer bar go in an overlay added next to the canvas, and take the parent's font.
-- The drawing buffer is sized once, at mount: the canvas's CSS size times `devicePixelRatio`.
+- The drawing buffer follows the canvas's CSS size times `devicePixelRatio`, so the canvas may resize (window resizes, phone turns).
 - The `.wasm` is fetched from next to `wasm/patches_wasm.js` (`import.meta.url`). That works as plain ES modules with no bundler, under any base path, and with bundlers that handle `new URL(..., import.meta.url)` (Vite, webpack 5, Turbopack).
 - `generatePuzzle(id)` resolves to the same puzzle as the `generate` CLI for that id, generated in the browser.
 - `PALETTE`, `clueColors`, `clueText` and the puzzle types are exported too, for UI around the board.

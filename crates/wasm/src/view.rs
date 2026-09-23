@@ -3,7 +3,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
-use patches_core::{BoxRegion, Cell, N};
+use patches_core::{BoxRegion, N};
 
 use crate::geom::WHOLE;
 use crate::keys::Dir;
@@ -61,12 +61,6 @@ impl Flat {
     pub fn step(&mut self, delta: i8) {
         let v = i16::from(self.layer) + i16::from(delta);
         self.layer = v.clamp(0, i16::from(N - 1)) as u8;
-    }
-
-    /// The same cell's place on the shown layer.
-    pub fn project(&self, mut c: Cell) -> Cell {
-        c[self.axis] = self.layer;
-        c
     }
 
     /// The orbit `(yaw, pitch)` that looks straight at the face.
@@ -165,13 +159,6 @@ mod tests {
         let mut left = Flat::new(0, -1);
         left.step(2);
         assert_eq!((left.layer, left.depth()), (2, 2));
-    }
-
-    #[test]
-    fn a_cell_projects_onto_the_shown_layer() {
-        let mut front = Flat::new(2, 1);
-        front.step(-2);
-        assert_eq!(front.project([1, 2, 3]), [1, 2, 1]);
     }
 
     #[test]

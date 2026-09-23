@@ -23,8 +23,11 @@ pub const DASH_R: f32 = 0.012;
 /// Length of a dash and of the gap after it, before they stretch to fit an edge.
 const DASH: f32 = 0.07;
 const DASH_GAP: f32 = 0.05;
-/// Half-thickness of the three bars of an any-shape clue's jack.
-pub const JACK_R: f32 = 0.016;
+/// Half-thickness of the three bars of an any-shape clue's jack: bolder than a dash, since
+/// three lines have to hold their own beside a filled, outlined box.
+pub const JACK_R: f32 = 0.02;
+/// A jack's end caps against its bars' half-thickness.
+const JACK_CAP: f32 = 1.6;
 /// Inset of a block from its cells' faces, so neighbouring blocks read as separate.
 pub const BLOCK_GAP: f32 = 0.06;
 /// Half-thickness of the red outline of a box that breaks a rule.
@@ -109,6 +112,21 @@ pub fn nearness(p: [f32; 3], eye: [f32; 3], region: &BoxRegion) -> f32 {
         (lo.min(t), hi.max(t))
     });
     ((toward(p) - far) / (near - far)).clamp(0.0, 1.0)
+}
+
+/// The value `nearness` (0..1) of the way from the `far` end of `range` to the `near` end:
+/// how strongly something at that depth is drawn.
+pub fn by_depth(nearness: f32, (near, far): (f32, f32)) -> f32 {
+    far + (near - far) * nearness
+}
+
+/// How thick a clue marker's lines are against their plain thickness, nearest to
+/// farthest: bolder in front, as in a line drawing, so depth reads without dimming colour.
+const MARKER_WEIGHT: (f32, f32) = (1.45, 0.55);
+
+/// The line weight of a clue marker at `nearness` (0..1); 1 is the plain thickness.
+pub fn marker_weight(nearness: f32) -> f32 {
+    by_depth(nearness, MARKER_WEIGHT)
 }
 
 /// The cube without its layer nearest `eye`, on the axis `eye` lies most along.
@@ -199,9 +217,9 @@ pub fn marker_half(shape: Shape) -> [f32; 3] {
 }
 
 /// The 12 edges of `p`'s box as dashes, each edge with a dash at both ends so the corners
-/// show: a shaped clue's marker, drawn tentative beside the solid blocks.
-pub fn dashed_edges(p: &Pose) -> Vec<Pose> {
-    box_edges(p, DASH_R).iter().flat_map(dashes).collect()
+/// show: a shaped clue's marker, drawn tentative beside the solid blocks. `r` thick.
+pub fn dashed_edges(p: &Pose, r: f32) -> Vec<Pose> {
+    box_edges(p, r).iter().flat_map(dashes).collect()
 }
 
 /// Splits a thin cuboid along its long axis into as many dashes as fit at about `DASH` and
@@ -226,15 +244,25 @@ fn dashes(edge: &Pose) -> Vec<Pose> {
 }
 
 /// Three thin bars along x, y and z crossing at `center`: an any-shape clue's marker, a
-/// box that can grow any way. As long as a shaped marker's long side.
-pub fn jack(center: [f32; 3]) -> Vec<Pose> {
-    (0..3)
-        .map(|axis| {
-            let mut half = [JACK_R; 3];
-            half[axis] = MARK_LONG;
-            Pose { center, half }
+/// box that can grow any way. As long as a shaped marker's long side; `r` thick, with a
+/// square cap on each end.
+pub fn jack(center: [f32; 3], r: f32) -> Vec<Pose> {
+    let bars = (0..3).map(|axis| {
+        let mut half = [r; 3];
+        half[axis] = MARK_LONG;
+        Pose { center, half }
+    });
+    let caps = (0..3).flat_map(|axis| {
+        [-MARK_LONG, MARK_LONG].map(|d| {
+            let mut c = center;
+            c[axis] += d;
+            Pose {
+                center: c,
+                half: [r * JACK_CAP; 3],
+            }
         })
-        .collect()
+    });
+    bars.chain(caps).collect()
 }
 
 #[cfg(test)]
@@ -331,6 +359,13 @@ mod tests {
     }
 
     #[test]
+    fn by_depth_runs_from_the_far_end_to_the_near_end() {
+        assert!((by_depth(1.0, (0.9, 0.3)) - 0.9).abs() < 1e-5);
+        assert!((by_depth(0.0, (0.9, 0.3)) - 0.3).abs() < 1e-5);
+        assert!((by_depth(0.5, (0.9, 0.3)) - 0.6).abs() < 1e-5);
+    }
+
+    #[test]
     fn nearness_in_2d_splits_the_near_and_far_face_of_the_layer() {
         let layer = BoxRegion {
             min: [0, 0, 3],
@@ -411,7 +446,7 @@ mod tests {
             half: marker_half(Shape::Tall),
         };
         let edges = box_edges(&p, DASH_R);
-        let dashes = dashed_edges(&p);
+        let dashes = dashed_edges(&p, DASH_R);
         for e in &edges {
             let axis = (0..3)
                 .find(|&i| e.half[i] > DASH_R)
@@ -434,35 +469,48 @@ mod tests {
     }
 
     #[test]
-    fn dashes_are_thin_and_stay_on_the_marker_s_edges() {
+    fn dashes_are_as_thick_as_asked_and_stay_on_the_marker_s_edges() {
         let p = Pose {
             center: [0.5, 0.5, 0.5],
             half: marker_half(Shape::Flat),
         };
-        for d in dashed_edges(&p) {
-            assert_eq!(
-                (0..3)
-                    .filter(|&i| (d.half[i] - DASH_R).abs() < 1e-6)
-                    .count(),
-                2
-            );
+        let r = 1.5 * DASH_R;
+        for d in dashed_edges(&p, r) {
+            assert_eq!((0..3).filter(|&i| (d.half[i] - r).abs() < 1e-6).count(), 2);
             for i in 0..3 {
                 let reach = (d.center[i] - p.center[i]).abs() + d.half[i];
-                assert!(reach <= p.half[i] + DASH_R + 1e-5);
+                assert!(reach <= p.half[i] + r + 1e-5);
             }
         }
     }
 
     #[test]
+    fn nearer_markers_are_drawn_with_bolder_lines() {
+        assert!(marker_weight(1.0) > marker_weight(0.0));
+        // The middle of the cube keeps the plain thickness; the back stays visible.
+        assert!((marker_weight(0.5) - 1.0).abs() < 1e-5);
+        assert!(marker_weight(0.0) >= 0.5);
+        assert!(marker_weight(1.0) <= 1.6);
+    }
+
+    #[test]
     fn a_jack_crosses_three_bars_at_the_cell_centre() {
         let c = cell_center([2, 0, 1]);
-        let bars = jack(c);
-        assert_eq!(bars.len(), 3);
-        for (axis, b) in bars.iter().enumerate() {
+        let r = 0.5 * JACK_R;
+        let parts = jack(c, r);
+        assert_eq!(parts.len(), 3 + 6);
+        for (axis, b) in parts[..3].iter().enumerate() {
             assert!(close(b.center, c));
-            let mut want = [JACK_R; 3];
+            let mut want = [r; 3];
             want[axis] = MARK_LONG;
             assert!(close(b.half, want));
+        }
+        // A square cap on each end of each bar, wider than the bar, so it reads from afar.
+        for cap in &parts[3..] {
+            let off: Vec<f32> = (0..3).map(|i| (cap.center[i] - c[i]).abs()).collect();
+            assert_eq!(off.iter().filter(|&&d| d < 1e-5).count(), 2);
+            assert!(off.iter().any(|&d| (d - MARK_LONG).abs() < 1e-5));
+            assert!(cap.half.iter().all(|&h| h > r && (h - cap.half[0]).abs() < 1e-6));
         }
     }
 

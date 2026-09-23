@@ -30,7 +30,6 @@ export const PALETTE = [
   "#92c1fd",
   "#aa95e8",
   "#f99fdb",
-  "#fdd4c6",
 ];
 
 /** Clues at most this many cells apart, centre to centre, count as near each other. */

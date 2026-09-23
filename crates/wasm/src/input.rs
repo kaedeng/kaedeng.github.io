@@ -31,6 +31,11 @@ pub enum Moved {
 #[derive(Debug, PartialEq)]
 pub enum Released {
     Nothing,
+    /// A click on this empty cell: the same as Space there, starting a box or finishing the
+    /// one being drawn, whether a click or the keyboard began it.
+    Tap(Cell),
+    /// A click on nothing, or a drag let go off the cube: drop any box half drawn.
+    Cancel,
     Place(BoxRegion),
     Remove(BoxRegion),
     /// Grow placed box `old` into `new`.
@@ -94,8 +99,6 @@ struct Press {
 
 #[derive(Default)]
 pub struct Input {
-    /// First corner of a click-click box.
-    pending: Option<Cell>,
     press: Option<Press>,
 }
 
@@ -167,49 +170,28 @@ impl Input {
         let Some(p) = self.press.take() else {
             return Released::Nothing;
         };
-        // Only the click-click path and an orbit keep the selection, so click A / orbit /
-        // click B still works.
-        if !matches!(
-            (p.mode, p.moved),
-            (Mode::Build { .. }, false) | (Mode::Orbit, true)
-        ) {
-            self.pending = None;
-        }
         // A drag released off the grid is cancelled.
         let grown = |extent: BoxRegion| hover.map(|h| extent.including(h));
         match (p.mode, p.moved) {
-            (Mode::Build { anchor, .. }, false) => self.click(anchor),
+            (Mode::Build { anchor, .. }, false) => Released::Tap(anchor),
             (Mode::Build { extent, .. }, true) => {
-                grown(extent).map_or(Released::Nothing, Released::Place)
+                grown(extent).map_or(Released::Cancel, Released::Place)
             }
             (Mode::Extend { block, .. }, false) => Released::Remove(block),
             (Mode::Extend { block, extent }, true) => {
-                grown(extent).map_or(Released::Nothing, |new| Released::Replace {
+                grown(extent).map_or(Released::Cancel, |new| Released::Replace {
                     old: block,
                     new,
                 })
             }
-            (Mode::Orbit, _) => Released::Nothing,
+            // An orbit keeps a box half drawn, so click A / turn / click B still works.
+            (Mode::Orbit, true) => Released::Nothing,
+            (Mode::Orbit, false) => Released::Cancel,
         }
     }
 
     pub fn cancel(&mut self) {
         self.press = None;
-        self.pending = None;
-    }
-
-    pub fn pending(&self) -> Option<Cell> {
-        self.pending
-    }
-
-    fn click(&mut self, cell: Cell) -> Released {
-        match self.pending.take() {
-            Some(first) => Released::Place(BoxRegion::spanning(first, cell)),
-            None => {
-                self.pending = Some(cell);
-                Released::Nothing
-            }
-        }
     }
 }
 
@@ -219,21 +201,10 @@ mod tests {
 
     const A: Cell = [0, 0, 0];
     const B: Cell = [1, 2, 0];
-    const C: Cell = [3, 3, 3];
 
     fn click(input: &mut Input, target: Target, hover: Option<Cell>) -> Released {
         input.down((0.0, 0.0), target);
         input.up(hover)
-    }
-
-    fn with_pending(cell: Cell) -> Input {
-        let mut input = Input::default();
-        assert_eq!(
-            click(&mut input, Target::Empty(cell), Some(cell)),
-            Released::Nothing
-        );
-        assert_eq!(input.pending(), Some(cell));
-        input
     }
 
     #[test]
@@ -247,8 +218,17 @@ mod tests {
     }
 
     #[test]
-    fn orbit_drag_keeps_pending() {
-        let mut input = with_pending(A);
+    fn a_click_on_an_empty_cell_is_a_tap_there() {
+        let mut input = Input::default();
+        assert_eq!(
+            click(&mut input, Target::Empty(A), Some(A)),
+            Released::Tap(A)
+        );
+    }
+
+    #[test]
+    fn an_orbit_drag_leaves_a_box_half_drawn_alone() {
+        let mut input = Input::default();
         input.down((10.0, 10.0), Target::Nothing);
         assert!(!input.building());
         assert_eq!(
@@ -260,17 +240,6 @@ mod tests {
             Moved::Orbit { dx: 0.0, dy: 3.0 }
         );
         assert_eq!(input.up(None), Released::Nothing);
-        assert_eq!(input.pending(), Some(A));
-    }
-
-    #[test]
-    fn click_empty_then_click_empty_places_the_span() {
-        let mut input = with_pending(A);
-        assert_eq!(
-            click(&mut input, Target::Empty(B), Some(B)),
-            Released::Place(BoxRegion::spanning(A, B))
-        );
-        assert_eq!(input.pending(), None);
     }
 
     #[test]
@@ -292,7 +261,6 @@ mod tests {
             input.up(Some(B)),
             Released::Place(BoxRegion::spanning(A, B))
         );
-        assert_eq!(input.pending(), None);
         assert!(!input.building());
     }
 
@@ -386,12 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn drag_released_off_grid_places_nothing_and_clears_pending() {
-        let mut input = with_pending(C);
+    fn drag_released_off_grid_places_nothing_and_cancels() {
+        let mut input = Input::default();
         input.down((0.0, 0.0), Target::Empty(A));
         input.moved((20.0, 0.0), Some(B), 0.0);
-        assert_eq!(input.up(None), Released::Nothing);
-        assert_eq!(input.pending(), None);
+        assert_eq!(input.up(None), Released::Cancel);
     }
 
     const BLOCK: BoxRegion = BoxRegion {
@@ -400,13 +367,12 @@ mod tests {
     };
 
     #[test]
-    fn click_on_a_block_removes_it_and_clears_pending() {
-        let mut input = with_pending(C);
+    fn click_on_a_block_removes_it() {
+        let mut input = Input::default();
         assert_eq!(
             click(&mut input, Target::Block(BLOCK), Some(A)),
             Released::Remove(BLOCK)
         );
-        assert_eq!(input.pending(), None);
     }
 
     #[test]
@@ -433,14 +399,13 @@ mod tests {
         let mut input = Input::default();
         input.down((0.0, 0.0), Target::Block(BLOCK));
         input.moved((20.0, 0.0), Some([2, 0, 0]), 0.0);
-        assert_eq!(input.up(None), Released::Nothing);
+        assert_eq!(input.up(None), Released::Cancel);
     }
 
     #[test]
-    fn click_on_nothing_clears_pending() {
-        let mut input = with_pending(A);
-        assert_eq!(click(&mut input, Target::Nothing, None), Released::Nothing);
-        assert_eq!(input.pending(), None);
+    fn click_on_nothing_cancels() {
+        let mut input = Input::default();
+        assert_eq!(click(&mut input, Target::Nothing, None), Released::Cancel);
     }
 
     #[test]
@@ -452,7 +417,6 @@ mod tests {
 
         input.down((0.0, 0.0), Target::Empty(A));
         input.moved((3.0, 2.0), Some(A), 0.0);
-        assert_eq!(input.up(Some(A)), Released::Nothing);
-        assert_eq!(input.pending(), Some(A));
+        assert_eq!(input.up(Some(A)), Released::Tap(A));
     }
 }

@@ -300,6 +300,13 @@ impl Cursor {
     pub fn cancel(&mut self) {
         self.sel = None;
     }
+
+    /// A click on the empty `cell`: the same as moving there and pressing Space, so mouse
+    /// and keyboard can start and finish each other's boxes.
+    pub fn tap(&mut self, cell: Cell) -> Released {
+        self.cell = cell;
+        self.select(None)
+    }
 }
 
 #[cfg(test)]
@@ -419,6 +426,43 @@ mod tests {
             Released::Place(BoxRegion::spanning([0, 0, 0], [2, 0, 0]))
         );
         assert_eq!(c.selection(), None);
+    }
+
+    #[test]
+    fn a_tap_is_space_on_that_cell_whoever_began_the_box() {
+        // Two clicks: the first starts a box, the second places it.
+        let mut c = Cursor::new([0, 0, 0]);
+        assert_eq!(c.tap([1, 0, 0]), Released::Nothing);
+        assert_eq!(c.cell, [1, 0, 0]);
+        assert!(c.selecting());
+        assert_eq!(
+            c.tap([2, 1, 0]),
+            Released::Place(BoxRegion::spanning([1, 0, 0], [2, 1, 0]))
+        );
+        // A click, then the keyboard finishes it.
+        c.tap([0, 0, 0]);
+        c.step(2, 2, &WHOLE);
+        assert_eq!(
+            c.select(None),
+            Released::Place(BoxRegion::spanning([0, 0, 0], [0, 0, 2]))
+        );
+        // The keyboard starts a box, a click finishes it.
+        c.select(None);
+        assert_eq!(
+            c.tap([3, 3, 3]),
+            Released::Place(BoxRegion::spanning([0, 0, 2], [3, 3, 3]))
+        );
+        // A click while the keyboard grows a box grows it to the clicked cell.
+        let block = BoxRegion::spanning([0, 0, 0], [0, 1, 0]);
+        c.cell = [0, 0, 0];
+        c.select(Some(block));
+        assert_eq!(
+            c.tap([2, 0, 0]),
+            Released::Replace {
+                old: block,
+                new: BoxRegion::spanning([0, 0, 0], [2, 1, 0])
+            }
+        );
     }
 
     #[test]

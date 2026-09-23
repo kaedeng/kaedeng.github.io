@@ -15,22 +15,25 @@ use web_sys::HtmlCanvasElement;
 
 use crate::anim::Anim;
 use crate::geom::{
-    DOT_R, EDGE_R, OUTLINE_R, Pose, WHOLE, block_pose, box_edges, cell_center, clip, corners,
-    cut_faces, dashed_edges, grid_lines, jack, marker_half, nearness, peeled, region_edges,
+    DASH_R, DOT_R, EDGE_R, JACK_R, OUTLINE_R, Pose, WHOLE, block_pose, box_edges, by_depth,
+    cell_center, clip, corners, cut_faces, dashed_edges, grid_lines, jack, marker_half,
+    marker_weight, nearness, peeled, region_edges,
 };
 use crate::input::{Input, Moved, Released, Target};
 use crate::keys::{Cmd, Cursor, Dir, Keys, Press, axis_for};
 use crate::pick::{hidden, pick};
 use crate::view::{Flat, facing, orbit};
 
-/// Close enough to fill the view, far enough that the whole cube fits from every angle.
-const CAMERA_DISTANCE: f32 = 12.0;
-const FIELD_OF_VIEW: Deg<f32> = Deg(35.0);
+/// Close enough to fill the view, far enough that the whole cube fits from every angle
+/// (its corners are 3.46 from the centre; sin 25° × 8.5 is 3.6).
+const CAMERA_DISTANCE: f32 = 8.5;
+/// Wide enough that the back of the cube looks clearly smaller than the front.
+const FIELD_OF_VIEW: Deg<f32> = Deg(50.0);
 /// CSS px kept clear around the layer in 2D, so the view cube in the corner never covers
 /// a cell.
 const FLAT_MARGIN: f32 = 80.0;
 /// How much closer the camera gets at full zoom.
-const ZOOM_RANGE: f32 = 4.0;
+const ZOOM_RANGE: f32 = 2.8;
 /// Zoomed in at least this far (0..1), the layer nearest the camera is peeled away.
 const PEEL_AT: f32 = 0.5;
 /// On solving, blocks move this much further from the centre, so the cube opens up.
@@ -177,8 +180,8 @@ impl Game {
             100.0,
         );
         let cube = CpuMesh::cube();
-        let (marker_poses, marker_colors) = marker_instances(&puzzle, &colors, &WHOLE);
-        // The lattice fades with the camera, so `update_camera` below fills it in.
+        // The lattice and markers change with the camera, so `update_camera` below fills
+        // them in.
         let mut game = Game {
             wires: Gm::new(
                 instanced(&context, &cube, &[], Vec::new()),
@@ -188,10 +191,7 @@ impl Game {
                 instanced(&context, &CpuMesh::sphere(12), &[], Vec::new()),
                 see_through(&context, 255),
             ),
-            markers: Gm::new(
-                instanced(&context, &cube, &marker_poses, marker_colors),
-                unlit(&context),
-            ),
+            markers: Gm::new(instanced(&context, &cube, &[], Vec::new()), unlit(&context)),
             blocks_mesh: Gm::new(
                 instanced(&context, &cube, &[], Vec::new()),
                 block_material(&context),
@@ -235,6 +235,14 @@ impl Game {
             }
         }
         Ok(game)
+    }
+
+    /// Takes up the canvas's drawing buffer size, after JavaScript changed it: the camera
+    /// gets the new shape, so the cube isn't stretched and labels stay on their cells.
+    pub fn resize(&mut self) {
+        let (w, h) = (self.canvas.width(), self.canvas.height());
+        self.camera.set_viewport(Viewport::new_at_origo(w, h));
+        self.update_camera();
     }
 
     pub fn render(&mut self) {
@@ -355,7 +363,7 @@ impl Game {
     }
 
     /// Per clue, 1 when a solid block other than its own stands between the camera and its
-    /// cell, so its label can fade; else 0.
+    /// cell, so its label can hide; else 0.
     pub fn hidden_labels(&self) -> Vec<u8> {
         let eye: [f32; 3] = self.camera.position().into();
         let solid: Vec<BoxRegion> = self
@@ -376,6 +384,13 @@ impl Game {
         let target = self.target(x, y);
         self.input.down((x, y), target);
         self.set_hover(None);
+        // The keyboard carries on from where the mouse pressed. A box half drawn stays, so
+        // this click can finish it.
+        if let Some(c) = self.pick_cell(x, y) {
+            self.cursor.cell = c;
+            self.show_cursor();
+            self.show_selection();
+        }
         target != Target::Nothing
     }
 
@@ -408,7 +423,20 @@ impl Game {
 
     /// Returns true when the board changed.
     pub fn pointer_up(&mut self, x: f32, y: f32) -> bool {
-        let released = self.input.up(self.pick_cell(x, y));
+        let released = match self.input.up(self.pick_cell(x, y)) {
+            Released::Tap(c) => self.cursor.tap(c),
+            Released::Cancel => {
+                self.cursor.cancel();
+                Released::Nothing
+            }
+            // A box the mouse built, grew or removed ends any box half drawn; a turn doesn't.
+            other => {
+                if other != Released::Nothing {
+                    self.cursor.cancel();
+                }
+                other
+            }
+        };
         let changed = self.apply(released);
         self.show_selection();
         self.set_hover(self.pick_cell(x, y));
@@ -480,6 +508,7 @@ impl Game {
 
     pub fn pointer_cancel(&mut self) {
         self.input.cancel();
+        self.cursor.cancel();
         self.set_preview(None);
         self.set_hover(None);
     }
@@ -549,7 +578,7 @@ impl Game {
             Released::Place(r) => self.place(r),
             Released::Remove(r) => self.remove(r.min),
             Released::Replace { old, new } => self.extend(old, new),
-            Released::Nothing => false,
+            Released::Nothing | Released::Tap(_) | Released::Cancel => false,
         };
         if changed && self.playable && self.board.is_solved() {
             self.celebrate();
@@ -667,14 +696,11 @@ impl Game {
             .set_instances(&instances(&edges, vec![Srgba::WHITE; edges.len()]));
     }
 
-    /// The keyboard's box in progress, else the first corner of a click-click box. In 2D, a
-    /// first corner on another layer shows where it lines up on this one.
+    /// The box being drawn, begun by a click or the keyboard. In 2D it is cut to the shown
+    /// layer, and the cursor follows the layer, so a first corner on another layer shows
+    /// where it lines up on this one.
     fn show_selection(&mut self) {
-        let pending = self.input.pending().map(|c| {
-            let c = self.flat.map_or(c, |f| f.project(c));
-            BoxRegion::spanning(c, c)
-        });
-        self.set_preview(self.cursor.selection().or(pending));
+        self.set_preview(self.cursor.selection());
     }
 
     fn place(&mut self, r: BoxRegion) -> bool {
@@ -862,10 +888,10 @@ impl Game {
         if shown != self.shown {
             self.shown = shown;
             self.cursor.clamp(&shown);
-            self.show_markers();
             self.sync_blocks();
             self.show_cursor();
         }
+        self.show_markers();
         self.show_lattice();
     }
 
@@ -878,10 +904,27 @@ impl Game {
         h / cell.max(1.0)
     }
 
-    /// Redraws the clue markers for the shown cells.
+    /// Redraws the clue markers for the shown cells and the camera: nearer ones in bolder
+    /// lines.
     fn show_markers(&mut self) {
-        let (poses, colors) = marker_instances(&self.puzzle, &self.colors, &self.shown);
+        let weights: Vec<f32> = self
+            .puzzle
+            .clues
+            .iter()
+            .map(|c| marker_weight(self.clue_nearness(c.cell)))
+            .collect();
+        let (poses, colors) = marker_instances(&self.puzzle, &self.colors, &weights, &self.shown);
         self.markers.set_instances(&instances(&poses, colors));
+    }
+
+    /// How near the camera clue cell `c` is (0..1), to weigh its marker's lines. In 2D the
+    /// one layer shown is all at one depth, so every clue gets the plain weight.
+    fn clue_nearness(&self, c: Cell) -> f32 {
+        if self.flat.is_some() {
+            return 0.5;
+        }
+        let eye: [f32; 3] = self.camera.position().into();
+        nearness(cell_center(c), eye, &self.shown)
     }
 
     /// Redraws the lattice of the shown cells for the camera: each line and corner dot
@@ -907,8 +950,8 @@ impl Game {
 }
 
 /// White at an opacity between the `(near, far)` ends of `alpha`, by `nearness` (0..1).
-fn faded(nearness: f32, (near, far): (f32, f32)) -> Srgba {
-    let a = far + (near - far) * nearness;
+fn faded(nearness: f32, alpha: (f32, f32)) -> Srgba {
+    let a = by_depth(nearness, alpha);
     Srgba::new(255, 255, 255, (a * 255.0).round() as u8)
 }
 
@@ -969,25 +1012,32 @@ fn unlit(context: &Context) -> ColorMaterial {
     )
 }
 
-/// For each shown clue, in its colour: a dashed outline in its box's shape, or a jack
-/// when any shape will do.
+/// For each shown clue, in its colour and with its lines `weights[i]` times their plain
+/// thickness: a dashed outline in its box's shape, filled with the page's black so it hides
+/// what lies behind it, or a jack when any shape will do.
 fn marker_instances(
     puzzle: &Puzzle,
     colors: &[Srgba],
+    weights: &[f32],
     shown: &BoxRegion,
 ) -> (Vec<Pose>, Vec<Srgba>) {
     let (mut poses, mut out) = (Vec::new(), Vec::new());
-    for (clue, &color) in puzzle.clues.iter().zip(colors) {
+    for ((clue, &color), &w) in puzzle.clues.iter().zip(colors).zip(weights) {
         if !shown.contains(clue.cell) {
             continue;
         }
         let center = cell_center(clue.cell);
         let marker = match clue.shape {
-            Some(shape) => dashed_edges(&Pose {
-                center,
-                half: marker_half(shape),
-            }),
-            None => jack(center),
+            Some(shape) => {
+                let body = Pose {
+                    center,
+                    half: marker_half(shape),
+                };
+                poses.push(body);
+                out.push(Srgba::BLACK);
+                dashed_edges(&body, DASH_R * w)
+            }
+            None => jack(center, JACK_R * w),
         };
         out.extend(std::iter::repeat_n(color, marker.len()));
         poses.extend(marker);

@@ -1,4 +1,5 @@
 import init, { Game, generate } from "../wasm/patches_wasm.js";
+import { labelFont } from "./labels.js";
 import {
   clueColors,
   clueText,
@@ -98,7 +99,7 @@ export async function generatePuzzle(id: string): Promise<Puzzle> {
  * Draws `puzzle` on `canvas` and forwards the canvas's pointer, wheel, key and focus
  * events to it. Clue labels and the vim mode line go in an overlay added right after the
  * canvas: the canvas should fill a positioned parent, and the labels take its font. The
- * drawing buffer is sized to the canvas once, here.
+ * drawing buffer follows the canvas's size, so the canvas may resize freely.
  */
 export async function mountBoard(
   canvas: HTMLCanvasElement,
@@ -107,9 +108,7 @@ export async function mountBoard(
 ): Promise<Board> {
   wasmReady ??= init();
   await wasmReady;
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(canvas.clientWidth * dpr);
-  canvas.height = Math.round(canvas.clientHeight * dpr);
+  fitBuffer(canvas);
   const colors = clueColors(puzzle.clues);
   const game = new Game(
     canvas,
@@ -118,6 +117,7 @@ export async function mountBoard(
     new Uint32Array(colors.map((c) => parseInt(c.slice(1), 16))),
   );
   const overlay = createOverlay(puzzle, colors);
+  sizeLabels(overlay.labels, canvas.clientWidth);
   canvas.after(overlay.root);
 
   let raf = 0;
@@ -176,6 +176,15 @@ export async function mountBoard(
     game.step_layer(1);
     refresh(false);
   };
+  // When the window resizes or a phone turns, a buffer left at the old size would stretch
+  // the cube and pull the labels off their cells.
+  const resized = new ResizeObserver(() => {
+    if (!fitBuffer(canvas)) return;
+    game.resize();
+    sizeLabels(overlay.labels, canvas.clientWidth);
+    refresh(false);
+  });
+  resized.observe(canvas);
   refresh(true);
 
   return {
@@ -184,6 +193,7 @@ export async function mountBoard(
       refresh(true);
     },
     destroy() {
+      resized.disconnect();
       for (const [type, fn] of listeners) canvas.removeEventListener(type, fn);
       cancelAnimationFrame(raf);
       overlay.root.remove();
@@ -296,6 +306,31 @@ function inputListeners(
   };
 }
 
+/**
+ * Sizes the drawing buffer to the canvas's CSS size times `devicePixelRatio`. Returns
+ * false when it already fits, or while the canvas is hidden and has no size.
+ */
+function fitBuffer(canvas: HTMLCanvasElement): boolean {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(canvas.clientWidth * dpr);
+  const h = Math.round(canvas.clientHeight * dpr);
+  if (!w || !h || (w === canvas.width && h === canvas.height)) return false;
+  canvas.width = w;
+  canvas.height = h;
+  return true;
+}
+
+/** Labels are smaller on a small board; `width` is the canvas's, in CSS px. */
+function sizeLabels(spans: HTMLSpanElement[], width: number) {
+  const font = labelFont(width);
+  for (const span of spans) {
+    span.style.padding = `0 ${font * 0.3}px`;
+    span.style.borderRadius = `${font * 0.3}px`;
+    span.style.fontSize = `${font}px`;
+    span.style.lineHeight = `${font * 1.4}px`;
+  }
+}
+
 function createOverlay(puzzle: Puzzle, colors: string[]): Overlay {
   const root = document.createElement("div");
   root.style.cssText = "position:absolute;inset:0;pointer-events:none";
@@ -303,8 +338,7 @@ function createOverlay(puzzle: Puzzle, colors: string[]): Overlay {
     const span = document.createElement("span");
     span.textContent = clueText(clue);
     span.style.cssText =
-      "position:absolute;top:0;left:0;display:none;padding:0 0.25rem;" +
-      "border-radius:0.25rem;font-size:0.875rem;line-height:1.25rem;" +
+      "position:absolute;top:0;left:0;display:none;" +
       `font-weight:600;color:#000;background:${colors[i]}`;
     return span;
   });
@@ -405,10 +439,9 @@ function placeLabels(game: Game, spans: HTMLSpanElement[]) {
   const hidden = game.hidden_labels();
   spans.forEach((span, i) => {
     const [x, y] = [points[2 * i], points[2 * i + 1]];
-    // NaN: the clue is in a peeled layer.
-    span.style.display = Number.isNaN(x) ? "none" : "";
-    // Behind another box: still there, but it no longer reads as on the front.
-    span.style.opacity = hidden[i] ? "0.35" : "";
+    // NaN: the clue is in a peeled layer. Behind another box, it would float over that
+    // box's face.
+    span.style.display = Number.isNaN(x) || hidden[i] ? "none" : "";
     span.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
   });
 }
