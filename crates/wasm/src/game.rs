@@ -1,8 +1,9 @@
 //! The 3D board: a white wireframe of the 4x4x4 cube, rendered with three-d on WebGL2.
-//! Each clue is a marker in its box's shape. Placed boxes are solid blocks in their clue's
-//! colour, or red outlines when they break a rule, and tween in and out. JavaScript owns
-//! the canvas events and forwards them, and calls `tick` + `render` on animation frames
-//! only while something moves.
+//! Each clue is a dashed marker in its box's shape, or a jack when any shape will do.
+//! Placed boxes are solid blocks in their clue's colour with darker edges, or red outlines
+//! when they break a rule, and tween in and out. JavaScript owns the canvas events and
+//! forwards them, and calls `tick` + `render` on animation frames only while something
+//! moves.
 
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
@@ -14,12 +15,12 @@ use web_sys::HtmlCanvasElement;
 
 use crate::anim::Anim;
 use crate::geom::{
-    DOT_R, MARK_R, Pose, WHOLE, block_pose, box_edges, cell_center, clip, grid_lines, lattice_dots,
-    marker_half, peeled,
+    DOT_R, EDGE_R, OUTLINE_R, Pose, WHOLE, block_pose, box_edges, cell_center, clip, corners,
+    cut_faces, dashed_edges, grid_lines, jack, marker_half, nearness, peeled, region_edges,
 };
 use crate::input::{Input, Moved, Released, Target};
 use crate::keys::{Cmd, Cursor, Dir, Keys, Press, axis_for};
-use crate::pick::pick;
+use crate::pick::{hidden, pick};
 use crate::view::{Flat, orbit};
 
 /// Close enough to fill the view, far enough that the whole cube fits from every angle.
@@ -34,13 +35,21 @@ const ZOOM_RANGE: f32 = 4.0;
 const PEEL_AT: f32 = 0.5;
 /// On solving, blocks move this much further from the centre, so the cube opens up.
 const SPREAD: f32 = 1.12;
-/// Opacity of the grid lines: faint hairlines you look through.
-const WIRE_ALPHA: u8 = 56;
+/// Opacity of the inner grid lines, nearest to farthest: faint hairlines you look through,
+/// fading with depth so the near side reads first.
+const WIRE_ALPHA: (f32, f32) = (0.3, 0.07);
+/// Opacity of the shown cells' 12 outer edges and 8 corner dots, nearest to farthest.
+const FRAME_ALPHA: (f32, f32) = (0.75, 0.2);
 const ORBIT_SPEED: f32 = 0.006;
 /// Just short of straight up and straight down, so the camera can go all the way around.
 const PITCH_RANGE: (f32, f32) = (-1.5, 1.5);
 /// Outline of a box that breaks a rule, like Patches' red patch.
 const WRONG: Srgba = Srgba::new_opaque(0xef, 0x44, 0x44);
+/// Brightness of a block's edges and section hatching against its colour.
+const DARKER: f32 = 0.6;
+/// How far up the screen a clue's label sits from its cell's centre: still inside the
+/// cell, and in 2D clear of its marker.
+const LABEL_LIFT: f32 = 0.34;
 
 struct Block {
     region: BoxRegion,
@@ -102,12 +111,18 @@ pub struct Game {
     /// The cells drawn and pickable: the whole cube, the cube without a peeled layer, or the
     /// one layer shown in 2D.
     shown: BoxRegion,
+    /// The shown cells' grid lines, fading with depth; their 12 outer edges bolder.
     wires: Gm<InstancedMesh, ColorMaterial>,
-    /// White lattice dots plus a round marker per any-shape clue.
+    /// A white dot on each of the shown cells' 8 corners, fading with depth like the lines.
     dots: Gm<InstancedMesh, ColorMaterial>,
-    /// A small cuboid in the clue's shape per shaped clue. A block hides its own clue's marker.
-    markers: Gm<InstancedMesh, PhysicalMaterial>,
+    /// Per clue, a dashed outline in its box's shape, or a jack for any shape. A block
+    /// hides its own clue's marker.
+    markers: Gm<InstancedMesh, ColorMaterial>,
     blocks_mesh: Gm<InstancedMesh, PhysicalMaterial>,
+    /// Each solid block's edges in a darker shade, so blocks of like colours stay apart.
+    edges: Gm<InstancedMesh, ColorMaterial>,
+    /// Diagonal stripes over each block's cut face while a layer is peeled in 3D.
+    hatch: Gm<InstancedMesh, Stripes>,
     outlines: Gm<InstancedMesh, ColorMaterial>,
     blocks: Vec<Block>,
     preview: Gm<Mesh, ColorMaterial>,
@@ -118,8 +133,8 @@ pub struct Game {
     ambient: AmbientLight,
     sun: DirectionalLight,
     puzzle: Puzzle,
-    /// Clue `i` is drawn in `palette[i % palette.len()]`.
-    palette: Vec<Srgba>,
+    /// Clue `i` and its box are drawn in `colors[i]`.
+    colors: Vec<Srgba>,
     board: Board,
     input: Input,
     keys: Keys,
@@ -135,18 +150,18 @@ pub struct Game {
 
 #[wasm_bindgen]
 impl Game {
-    /// `answer = true` shows the stored solution and ignores input. `palette` holds the
-    /// clue colours as `0xRRGGBB`.
+    /// `answer = true` shows the stored solution and ignores input. `colors` holds each
+    /// clue's colour as `0xRRGGBB`, in clue order.
     #[wasm_bindgen(constructor)]
     pub fn new(
         canvas: HtmlCanvasElement,
         puzzle_json: &str,
         answer: bool,
-        palette: &[u32],
+        colors: &[u32],
     ) -> Result<Game, JsValue> {
         console_error_panic_hook::set_once();
         let puzzle: Puzzle = serde_json::from_str(puzzle_json).map_err(err)?;
-        let palette: Vec<Srgba> = palette
+        let colors: Vec<Srgba> = colors
             .iter()
             .map(|&c| Srgba::new_opaque((c >> 16) as u8, (c >> 8) as u8, c as u8))
             .collect();
@@ -162,26 +177,27 @@ impl Game {
             100.0,
         );
         let cube = CpuMesh::cube();
-        let lines = grid_lines(&WHOLE);
-        let (dot_poses, dot_colors) = dot_instances(&puzzle, &palette, &WHOLE);
-        let (marker_poses, marker_colors) = marker_instances(&puzzle, &palette, &WHOLE);
+        let (marker_poses, marker_colors) = marker_instances(&puzzle, &colors, &WHOLE);
+        // The lattice fades with the camera, so `update_camera` below fills it in.
         let mut game = Game {
             wires: Gm::new(
-                instanced(&context, &cube, &lines, vec![Srgba::WHITE; lines.len()]),
-                see_through(&context, WIRE_ALPHA),
+                instanced(&context, &cube, &[], Vec::new()),
+                see_through(&context, 255),
             ),
             dots: Gm::new(
-                instanced(&context, &CpuMesh::sphere(12), &dot_poses, dot_colors),
-                unlit(&context),
+                instanced(&context, &CpuMesh::sphere(12), &[], Vec::new()),
+                see_through(&context, 255),
             ),
             markers: Gm::new(
                 instanced(&context, &cube, &marker_poses, marker_colors),
-                block_material(&context),
+                unlit(&context),
             ),
             blocks_mesh: Gm::new(
                 instanced(&context, &cube, &[], Vec::new()),
                 block_material(&context),
             ),
+            edges: Gm::new(instanced(&context, &cube, &[], Vec::new()), unlit(&context)),
+            hatch: Gm::new(instanced(&context, &cube, &[], Vec::new()), Stripes),
             outlines: Gm::new(instanced(&context, &cube, &[], Vec::new()), unlit(&context)),
             cursor_mesh: Gm::new(instanced(&context, &cube, &[], Vec::new()), unlit(&context)),
             blocks: Vec::new(),
@@ -202,7 +218,7 @@ impl Game {
             shown: WHOLE,
             context,
             puzzle,
-            palette,
+            colors,
             input: Input::default(),
             keys: Keys::default(),
             cursor: Cursor::new([N - 1; 3]),
@@ -229,6 +245,8 @@ impl Game {
             &self.dots,
             &self.markers,
             &self.blocks_mesh,
+            &self.edges,
+            &self.hatch,
             &self.outlines,
             &self.cursor_mesh,
         ];
@@ -255,19 +273,14 @@ impl Game {
         moving
     }
 
-    /// Screen position (CSS px, top-left origin) of every clue's top face (in 2D, the top
-    /// of its cell on screen, clear of the marker), flattened as `[x0, y0, x1, y1, ...]`;
-    /// NaN for a clue in a hidden layer.
+    /// Screen position (CSS px, top-left origin) of a point inside every clue's cell, up
+    /// the screen from its centre so the label clears most of the marker, flattened as
+    /// `[x0, y0, x1, y1, ...]`; NaN for a clue in a hidden layer.
     pub fn labels(&self) -> Vec<f32> {
         let s = self.scale();
         let h = self.canvas.height() as f32;
-        let lift = match self.flat {
-            Some(f) => {
-                let (yaw, pitch) = f.angles();
-                Vec3::from(orbit(yaw, pitch).1) * 0.34
-            }
-            None => vec3(0.0, 0.5, 0.0),
-        };
+        let (yaw, pitch) = self.angles();
+        let lift = Vec3::from(orbit(yaw, pitch).1) * LABEL_LIFT;
         self.puzzle
             .clues
             .iter()
@@ -275,10 +288,27 @@ impl Game {
                 if !self.shown.contains(c.cell) {
                     return [f32::NAN; 2];
                 }
-                let top = Vec3::from(cell_center(c.cell)) + lift;
-                let p = self.camera.pixel_at_position(top);
+                let anchor = Vec3::from(cell_center(c.cell)) + lift;
+                let p = self.camera.pixel_at_position(anchor);
                 [p.x / s, (h - p.y) / s]
             })
+            .collect()
+    }
+
+    /// Per clue, 1 when a solid block other than its own stands between the camera and its
+    /// cell, so its label can fade; else 0.
+    pub fn hidden_labels(&self) -> Vec<u8> {
+        let eye: [f32; 3] = self.camera.position().into();
+        let solid: Vec<BoxRegion> = self
+            .blocks
+            .iter()
+            .filter(|b| !b.wrong && !b.removing)
+            .map(|b| b.region)
+            .collect();
+        self.puzzle
+            .clues
+            .iter()
+            .map(|c| u8::from(hidden(eye, c.cell, &solid, &self.shown)))
             .collect()
     }
 
@@ -564,10 +594,13 @@ impl Game {
 
     fn show_cursor(&mut self) {
         let edges = if self.cursor_on {
-            box_edges(&Pose {
-                center: cell_center(self.cursor.cell),
-                half: [0.5; 3],
-            })
+            box_edges(
+                &Pose {
+                    center: cell_center(self.cursor.cell),
+                    half: [0.5; 3],
+                },
+                OUTLINE_R,
+            )
         } else {
             Vec::new()
         };
@@ -596,10 +629,7 @@ impl Game {
 
     /// The clue's colour, and whether the box breaks a rule.
     fn look(&self, r: &BoxRegion) -> (Srgba, bool) {
-        let color = self
-            .board
-            .clue_of(r)
-            .map_or(WRONG, |c| self.palette[c % self.palette.len()]);
+        let color = self.board.clue_of(r).map_or(WRONG, |c| self.colors[c]);
         (color, self.board.fault(r).is_some())
     }
 
@@ -635,22 +665,30 @@ impl Game {
     }
 
     fn sync_blocks(&mut self) {
-        let (wrong, solid): (Vec<&Block>, Vec<&Block>) = self.blocks.iter().partition(|b| b.wrong);
-        let (mut poses, mut colors) = (Vec::new(), Vec::new());
-        for b in solid {
-            if let Some(p) = clip(&b.anim.pose(), &self.shown) {
-                poses.push(p);
-                colors.push(b.color);
+        // Only a peel in 3D cuts a section; in 2D every face is a cut.
+        let hatching = self.flat.is_none();
+        let (mut solid, mut edges, mut cuts, mut wrong) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for b in &self.blocks {
+            let pose = b.anim.pose();
+            let Some(shown) = clip(&pose, &self.shown) else {
+                continue;
+            };
+            if b.wrong {
+                wrong.extend(box_edges(&shown, OUTLINE_R).into_iter().map(|e| (e, WRONG)));
+                continue;
+            }
+            let dark = darker(b.color);
+            solid.push((shown, b.color));
+            edges.extend(box_edges(&shown, EDGE_R).into_iter().map(|e| (e, dark)));
+            if hatching {
+                cuts.extend(cut_faces(&pose, &self.shown).into_iter().map(|f| (f, dark)));
             }
         }
-        self.blocks_mesh.set_instances(&instances(&poses, colors));
-        let edges: Vec<Pose> = wrong
-            .iter()
-            .filter_map(|b| clip(&b.anim.pose(), &self.shown))
-            .flat_map(|p| box_edges(&p))
-            .collect();
-        self.outlines
-            .set_instances(&instances(&edges, vec![WRONG; edges.len()]));
+        self.blocks_mesh.set_instances(&paired(solid));
+        self.edges.set_instances(&paired(edges));
+        self.hatch.set_instances(&paired(cuts));
+        self.outlines.set_instances(&paired(wrong));
         // With nothing to cast, generate_shadow_map keeps the old map, so clear it first.
         self.sun.clear_shadow_map();
         self.sun
@@ -757,10 +795,11 @@ impl Game {
         if shown != self.shown {
             self.shown = shown;
             self.cursor.clamp(&shown);
-            self.show_scenery();
+            self.show_markers();
             self.sync_blocks();
             self.show_cursor();
         }
+        self.show_lattice();
     }
 
     /// World units from the bottom to the top of the canvas in 2D: the layer fills the
@@ -772,16 +811,44 @@ impl Game {
         h / cell.max(1.0)
     }
 
-    /// Redraws the lattice and clue markers for the shown cells.
-    fn show_scenery(&mut self) {
-        let lines = grid_lines(&self.shown);
-        self.wires
-            .set_instances(&instances(&lines, vec![Srgba::WHITE; lines.len()]));
-        let (poses, colors) = dot_instances(&self.puzzle, &self.palette, &self.shown);
-        self.dots.set_instances(&instances(&poses, colors));
-        let (poses, colors) = marker_instances(&self.puzzle, &self.palette, &self.shown);
+    /// Redraws the clue markers for the shown cells.
+    fn show_markers(&mut self) {
+        let (poses, colors) = marker_instances(&self.puzzle, &self.colors, &self.shown);
         self.markers.set_instances(&instances(&poses, colors));
     }
+
+    /// Redraws the lattice of the shown cells for the camera: each line and corner dot
+    /// fades with its depth, and the 12 outer edges and corners stand out.
+    fn show_lattice(&mut self) {
+        let eye: [f32; 3] = self.camera.position().into();
+        let fade = |p: [f32; 3], alpha| faded(nearness(p, eye, &self.shown), alpha);
+        let inner = grid_lines(&self.shown).into_iter().map(|l| (l, WIRE_ALPHA));
+        let outer = region_edges(&self.shown)
+            .into_iter()
+            .map(|e| (e, FRAME_ALPHA));
+        let lines = inner.chain(outer).map(|(l, a)| (l, fade(l.center, a)));
+        self.wires.set_instances(&paired(lines.collect()));
+        let dots = corners(&self.shown).into_iter().map(|center| {
+            let dot = Pose {
+                center,
+                half: [DOT_R; 3],
+            };
+            (dot, fade(center, FRAME_ALPHA))
+        });
+        self.dots.set_instances(&paired(dots.collect()));
+    }
+}
+
+/// White at an opacity between the `(near, far)` ends of `alpha`, by `nearness` (0..1).
+fn faded(nearness: f32, (near, far): (f32, f32)) -> Srgba {
+    let a = far + (near - far) * nearness;
+    Srgba::new(255, 255, 255, (a * 255.0).round() as u8)
+}
+
+/// `color` at `DARKER` brightness: a block's edges and section hatching.
+fn darker(color: Srgba) -> Srgba {
+    let dim = |c: u8| (f32::from(c) * DARKER).round() as u8;
+    Srgba::new_opaque(dim(color.r), dim(color.g), dim(color.b))
 }
 
 // three-d wants an Arc'd context; WebGL is single-threaded, so Send/Sync never matters here.
@@ -818,6 +885,12 @@ fn instances(poses: &[Pose], colors: Vec<Srgba>) -> Instances {
     }
 }
 
+/// `instances` from `(pose, colour)` pairs.
+fn paired(items: Vec<(Pose, Srgba)>) -> Instances {
+    let (poses, colors): (Vec<Pose>, Vec<Srgba>) = items.into_iter().unzip();
+    instances(&poses, colors)
+}
+
 /// Flat colour, multiplied by each instance's colour.
 fn unlit(context: &Context) -> ColorMaterial {
     ColorMaterial::new_opaque(
@@ -829,47 +902,30 @@ fn unlit(context: &Context) -> ColorMaterial {
     )
 }
 
-/// White lattice dots, plus a round marker for each shown clue that allows any shape.
-fn dot_instances(puzzle: &Puzzle, palette: &[Srgba], shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba>) {
-    let mut poses: Vec<Pose> = lattice_dots(shown)
-        .into_iter()
-        .map(|center| Pose {
-            center,
-            half: [DOT_R; 3],
-        })
-        .collect();
-    let mut colors = vec![Srgba::WHITE; poses.len()];
-    for (i, clue) in puzzle.clues.iter().enumerate() {
-        if clue.shape.is_none() && shown.contains(clue.cell) {
-            poses.push(Pose {
-                center: cell_center(clue.cell),
-                half: [MARK_R; 3],
-            });
-            colors.push(palette[i % palette.len()]);
-        }
-    }
-    (poses, colors)
-}
-
-/// A small cuboid in its box's shape for each shown clue that names one.
+/// For each shown clue, in its colour: a dashed outline in its box's shape, or a jack
+/// when any shape will do.
 fn marker_instances(
     puzzle: &Puzzle,
-    palette: &[Srgba],
+    colors: &[Srgba],
     shown: &BoxRegion,
 ) -> (Vec<Pose>, Vec<Srgba>) {
-    let (mut poses, mut colors) = (Vec::new(), Vec::new());
-    for (i, clue) in puzzle.clues.iter().enumerate() {
-        if let Some(shape) = clue.shape
-            && shown.contains(clue.cell)
-        {
-            poses.push(Pose {
-                center: cell_center(clue.cell),
-                half: marker_half(shape),
-            });
-            colors.push(palette[i % palette.len()]);
+    let (mut poses, mut out) = (Vec::new(), Vec::new());
+    for (clue, &color) in puzzle.clues.iter().zip(colors) {
+        if !shown.contains(clue.cell) {
+            continue;
         }
+        let center = cell_center(clue.cell);
+        let marker = match clue.shape {
+            Some(shape) => dashed_edges(&Pose {
+                center,
+                half: marker_half(shape),
+            }),
+            None => jack(center),
+        };
+        out.extend(std::iter::repeat_n(color, marker.len()));
+        poses.extend(marker);
     }
-    (poses, colors)
+    (poses, out)
 }
 
 /// White, lit, and tinted per instance by the clue colour.
@@ -883,6 +939,49 @@ fn block_material(context: &Context) -> PhysicalMaterial {
             ..Default::default()
         },
     )
+}
+
+/// Diagonal stripes a fixed distance apart in world units, in each instance's colour. The
+/// rest is discarded, so the block face under them shows through: a section's hatching.
+struct Stripes;
+
+/// On any face across an axis, x + y + z runs diagonally, so its level lines are stripes
+/// at 45 degrees; 0.16 apart in the sum puts them about 0.11 apart on the face. Each
+/// stripe takes 30% of that, so the hatching stays light.
+const STRIPES_FRAG: &str = "
+in vec3 pos;
+in vec4 col;
+
+layout (location = 0) out vec4 outColor;
+
+void main()
+{
+    if (fract((pos.x + pos.y + pos.z) / 0.16) > 0.3) discard;
+    outColor = vec4(color_mapping(col.rgb), 1.0);
+}
+";
+
+impl Material for Stripes {
+    fn fragment_shader_source(&self, _lights: &[&dyn Light]) -> String {
+        format!("{}{}", ColorMapping::fragment_shader_source(), STRIPES_FRAG)
+    }
+
+    /// three-d leaves ids below 0x5000 to materials defined outside it.
+    fn id(&self) -> EffectMaterialId {
+        EffectMaterialId(0x0001)
+    }
+
+    fn use_uniforms(&self, program: &Program, viewer: &dyn Viewer, _lights: &[&dyn Light]) {
+        viewer.color_mapping().use_uniforms(program);
+    }
+
+    fn render_states(&self) -> RenderStates {
+        RenderStates::default()
+    }
+
+    fn material_type(&self) -> MaterialType {
+        MaterialType::Opaque
+    }
 }
 
 /// A see-through white box: the preview under a drag, the pending first corner of a

@@ -12,28 +12,62 @@ export type Puzzle = {
   solution: Box[];
 };
 
-/** Clue colours: the board draws clue `i` and its box in `clueColor(i)`. */
+/**
+ * Clue colours: spread around the hue wheel and over a few lightnesses, so any two tell
+ * apart, and all light enough for black text. `clueColors` picks one per clue.
+ */
 export const PALETTE = [
-  "#f1b1b1",
-  "#b1f1c4",
-  "#d6b1f1",
-  "#f1e9b1",
-  "#b1e6f1",
-  "#f1b1d4",
-  "#c1f1b1",
-  "#b4b1f1",
-  "#f1c6b1",
-  "#b1f1d9",
-  "#ecb1f1",
-  "#e4f1b1",
-  "#b1cdf1",
-  "#f1d8b1",
-  "#f1b1c2",
-  "#b1f1b1",
+  "#f98f87",
+  "#ffb572",
+  "#efdd71",
+  "#93ce70",
+  "#74e2c6",
+  "#61b9ce",
+  "#92c1fd",
+  "#aa95e8",
+  "#f99fdb",
+  "#fdd4c6",
 ];
 
-export function clueColor(clueIndex: number): string {
-  return PALETTE[clueIndex % PALETTE.length];
+/** Clues at most this many cells apart, centre to centre, count as near each other. */
+const NEAR = 2;
+
+/**
+ * The colour of each clue and its box. In order, each clue takes the colour least used
+ * by the clues near it so far; then the one whose clues are farthest off (each counts
+ * 1 / distance²), since boxes can touch from further away; then the least used overall;
+ * then the first in `PALETTE`. Only clue cells count, never the solution.
+ */
+export function clueColors(clues: Clue[]): string[] {
+  const used = PALETTE.map(() => 0);
+  const picked: number[] = [];
+  clues.forEach((clue, i) => {
+    const near = PALETTE.map(() => 0);
+    const pull = PALETTE.map(() => 0);
+    clues.slice(0, i).forEach((other, j) => {
+      const d2 = distance2(clue.cell, other.cell);
+      if (d2 <= NEAR * NEAR) near[picked[j]]++;
+      pull[picked[j]] += 1 / d2;
+    });
+    const best = leastUsed([near, pull, used]);
+    picked.push(best);
+    used[best]++;
+  });
+  return picked.map((k) => PALETTE[k]);
+}
+
+/** The palette index lowest on the first of `keys` where they differ, else the first. */
+function leastUsed(keys: number[][]): number {
+  let best = 0;
+  for (let k = 1; k < PALETTE.length; k++) {
+    const diff = keys.map((key) => key[k] - key[best]).find((d) => d !== 0);
+    if (diff !== undefined && diff < 0) best = k;
+  }
+  return best;
+}
+
+function distance2(a: Cell, b: Cell): number {
+  return a.reduce((sum, v, i) => sum + (v - b[i]) ** 2, 0);
 }
 
 export function clueText(clue: Clue): string {

@@ -5,16 +5,29 @@ const COS30 = Math.cos(Math.PI / 6);
 /** Shading of the top, +x and +z faces. */
 const FILL = [0.5, 0.25, 0.1];
 
+/** Where the +x, +y and +z bars of a jack end, seen like the boxes below. */
+const JACK_ENDS = [
+  [COS30, 0.5],
+  [0, -1],
+  [-COS30, 0.5],
+];
+
 /**
  * Isometric sketch of a box of `shape`, seen from +x +y +z like the 3D board's starting
- * view. No shape draws the round marker of a clue that allows any shape.
+ * view. No shape draws the jack of a clue that allows any shape, as on the board: three
+ * bars along x, y and z through the middle, as long as a box's long side.
  */
 export function ShapeIcon({ shape }: { shape?: Shape }) {
   if (!shape) {
     return (
       <svg viewBox="-2.2 -2.2 4.4 4.4" className="h-5 w-5" role="img">
         <title>any shape</title>
-        <circle r={0.9} fill="currentColor" fillOpacity={0.5} />
+        <path
+          d={JACK_ENDS.map(([x, y]) => `M${-x},${-y}L${x},${y}`).join("")}
+          stroke="currentColor"
+          strokeWidth={0.28}
+          strokeLinecap="round"
+        />
       </svg>
     );
   }

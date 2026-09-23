@@ -1,4 +1,4 @@
-import { clueColor, clueText, type Puzzle } from "patches-board";
+import { clueColors, clueText, type Puzzle } from "patches-board";
 import { boxIndexAt, clueAt, clueIndexOf } from "@/lib/puzzle";
 import { ShapeIcon } from "@/components/ShapeIcon";
 
@@ -11,6 +11,7 @@ export function Layers({
   showSolution: boolean;
 }) {
   const range = Array.from({ length: puzzle.size }, (_, i) => i);
+  const colors = clueColors(puzzle.clues);
   return (
     <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
       {range.map((y) => (
@@ -32,7 +33,7 @@ export function Layers({
                   <div
                     key={`${x}-${z}`}
                     className={`flex aspect-square flex-col items-center justify-center rounded border border-white/10 font-mono text-sm leading-none ${ci >= 0 ? "text-black" : ""}`}
-                    style={{ background: ci >= 0 ? clueColor(ci) : undefined }}
+                    style={{ background: ci >= 0 ? colors[ci] : undefined }}
                   >
                     {clue && <ShapeIcon shape={clue.shape} />}
                     {clue ? clueText(clue) : ""}

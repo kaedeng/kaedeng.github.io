@@ -1,7 +1,8 @@
 //! Which cell a pointer ray selects. Empty cells are see-through, so any shown cell can be
 //! picked, inner ones included: the one whose centre passes closest to the ray, the front
 //! one on near-ties. Cells behind the first placed box the ray enters are hidden by it,
-//! and cells outside the shown region (a peeled layer) do not count at all.
+//! and cells outside the shown region (a peeled layer) do not count at all. The same rays
+//! tell which clue cells another box hides, so their labels can fade.
 
 use patches_core::{BoxRegion, CELLS, Cell, cell_at};
 
@@ -47,6 +48,22 @@ fn closest(cells: &[(f32, f32, Cell)]) -> Option<Cell> {
         }
     }
     best.map(|(_, c)| c)
+}
+
+/// Whether the shown part of a placed box other than the one holding `cell` stands
+/// between `eye` and the cell's centre, so the cell's clue label should fade.
+pub fn hidden(eye: V, cell: Cell, boxes: &[BoxRegion], shown: &BoxRegion) -> bool {
+    let to = sub(cell_center(cell), eye);
+    let dist = dot(to, to).sqrt();
+    let dir = to.map(|v| v / dist);
+    boxes
+        .iter()
+        .filter(|b| !b.contains(cell))
+        .filter_map(|b| overlap(b, shown))
+        .any(|b| {
+            let (lo, hi) = extent(&b);
+            entry(eye, dir, lo, hi).is_some_and(|t| t < dist)
+        })
 }
 
 /// The shown part of the placed box the ray enters first, and how far along the ray it does.
@@ -155,6 +172,52 @@ mod tests {
         let (o, d) = aimed_at([1, 1, 1], [1.0, 2.0, 3.0]);
         let hit = pick(o, d, &[floor], &WHOLE).expect("the ray hits the floor box");
         assert!(floor.contains(hit));
+    }
+
+    #[test]
+    fn a_clue_is_hidden_only_behind_another_box() {
+        let eye = [0.0, 12.0, 0.0];
+        let clue = [1, 0, 2];
+        assert!(!hidden(eye, clue, &[], &WHOLE));
+        let above = BoxRegion {
+            min: [0, 2, 0],
+            max: [3, 3, 3],
+        };
+        assert!(hidden(eye, clue, &[above], &WHOLE));
+        // Its own box in front of it, or a box behind it, leaves the clue in view.
+        let own = BoxRegion {
+            min: [1, 0, 2],
+            max: [1, 3, 2],
+        };
+        assert!(!hidden(eye, clue, &[own], &WHOLE));
+        let floor = BoxRegion {
+            min: [0, 0, 0],
+            max: [3, 0, 3],
+        };
+        assert!(!hidden(eye, [1, 1, 2], &[floor], &WHOLE));
+    }
+
+    #[test]
+    fn a_box_only_hides_with_its_shown_part() {
+        let eye = [0.0, 12.0, 0.0];
+        let top = BoxRegion {
+            min: [0, 3, 0],
+            max: [3, 3, 3],
+        };
+        assert!(hidden(eye, [1, 1, 2], &[top], &WHOLE));
+        assert!(!hidden(eye, [1, 1, 2], &[top], &peeled([0.0, 1.0, 0.0])));
+    }
+
+    #[test]
+    fn a_box_off_to_the_side_hides_nothing() {
+        let eye = [8.0, 6.0, 10.0];
+        let corner = BoxRegion::spanning([0, 3, 0], [0, 3, 0]);
+        assert!(!hidden(eye, [3, 0, 3], &[corner], &WHOLE));
+        let (o, _) = aimed_at([0, 0, 0], [-1.0, -1.0, -1.0]);
+        let front = BoxRegion::spanning([1, 1, 1], [3, 3, 3]);
+        assert!(hidden(o, [0, 0, 0], &[front], &WHOLE));
+        let (o, _) = aimed_at([0, 0, 0], [1.0, 1.0, 1.0]);
+        assert!(!hidden(o, [0, 0, 0], &[front], &WHOLE));
     }
 
     #[test]

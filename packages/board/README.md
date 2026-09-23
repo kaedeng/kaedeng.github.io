@@ -39,7 +39,7 @@ board.destroy();
 - The drawing buffer is sized once, at mount: the canvas's CSS size times `devicePixelRatio`.
 - The `.wasm` is fetched from next to `wasm/patches_wasm.js` (`import.meta.url`). That works as plain ES modules with no bundler, under any base path, and with bundlers that handle `new URL(..., import.meta.url)` (Vite, webpack 5, Turbopack).
 - `generatePuzzle(seed)` resolves to the same puzzle as the `generate` CLI for that seed, generated in the browser.
-- `PALETTE`, `clueColor`, `clueText` and the puzzle types are exported too, for UI around the board.
+- `PALETTE`, `clueColors`, `clueText` and the puzzle types are exported too, for UI around the board.
 
 ## Moving it to another site
 

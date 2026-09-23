@@ -1,5 +1,5 @@
 import init, { Game, generate } from "../wasm/patches_wasm.js";
-import { clueColor, clueText, PALETTE, type Puzzle } from "./puzzle.js";
+import { clueColors, clueText, type Puzzle } from "./puzzle.js";
 
 export * from "./puzzle.js";
 
@@ -79,14 +79,14 @@ export async function mountBoard(
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(canvas.clientWidth * dpr);
   canvas.height = Math.round(canvas.clientHeight * dpr);
-  const palette = new Uint32Array(PALETTE.map((c) => parseInt(c.slice(1), 16)));
+  const colors = clueColors(puzzle.clues);
   const game = new Game(
     canvas,
     JSON.stringify(puzzle),
     options.answer ?? false,
-    palette,
+    new Uint32Array(colors.map((c) => parseInt(c.slice(1), 16))),
   );
-  const overlay = createOverlay(puzzle);
+  const overlay = createOverlay(puzzle, colors);
   canvas.after(overlay.root);
 
   let raf = 0;
@@ -219,7 +219,7 @@ function inputListeners(
   };
 }
 
-function createOverlay(puzzle: Puzzle): Overlay {
+function createOverlay(puzzle: Puzzle, colors: string[]): Overlay {
   const root = document.createElement("div");
   root.style.cssText = "position:absolute;inset:0;pointer-events:none";
   const labels = puzzle.clues.map((clue, i) => {
@@ -228,7 +228,7 @@ function createOverlay(puzzle: Puzzle): Overlay {
     span.style.cssText =
       "position:absolute;top:0;left:0;display:none;padding:0 0.25rem;" +
       "border-radius:0.25rem;font-size:0.875rem;line-height:1.25rem;" +
-      `font-weight:600;color:#000;background:${clueColor(i)}`;
+      `font-weight:600;color:#000;background:${colors[i]}`;
     return span;
   });
   const modeLine = document.createElement("p");
@@ -325,10 +325,13 @@ function showView(game: Game, overlay: Overlay, size: number) {
 
 function placeLabels(game: Game, spans: HTMLSpanElement[]) {
   const points = game.labels();
+  const hidden = game.hidden_labels();
   spans.forEach((span, i) => {
     const [x, y] = [points[2 * i], points[2 * i + 1]];
     // NaN: the clue is in a peeled layer.
     span.style.display = Number.isNaN(x) ? "none" : "";
+    // Behind another box: still there, but it no longer reads as on the front.
+    span.style.opacity = hidden[i] ? "0.35" : "";
     span.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
   });
 }
