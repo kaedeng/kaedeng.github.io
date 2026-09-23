@@ -500,6 +500,12 @@ impl Game {
         self.flat.map_or(-1, |f| i32::from(f.depth()))
     }
 
+    /// How far the camera is from the cube's centre, in cells, e.g. to give a view cube the
+    /// same perspective.
+    pub fn view_distance(&self) -> f32 {
+        self.camera.position().magnitude()
+    }
+
     /// The camera's `[yaw, pitch]` in radians, e.g. to turn a view cube with it.
     pub fn view_angles(&self) -> Vec<f32> {
         let (yaw, pitch) = self.angles();

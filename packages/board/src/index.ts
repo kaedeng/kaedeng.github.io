@@ -1,5 +1,10 @@
 import init, { Game, generate } from "../wasm/patches_wasm.js";
-import { labelFont } from "./labels.js";
+import {
+  labelFont,
+  viewCubeInset,
+  viewCubePerspective,
+  viewCubeSide,
+} from "./sizes.js";
 import {
   clueColors,
   clueText,
@@ -59,6 +64,10 @@ type Overlay = {
   modeLine: HTMLParagraphElement;
   /** Turns with the camera; clicking a face shows one layer face-on. */
   viewCube: HTMLDivElement;
+  /** The view cube's box in the corner, which sets its size and perspective. */
+  viewBox: HTMLDivElement;
+  /** The view cube's side, CSS px. */
+  cubeSide: number;
   faces: HTMLButtonElement[];
   /** Pages through the layers in 2D; hidden in 3D. */
   layerBar: HTMLDivElement;
@@ -67,14 +76,14 @@ type Overlay = {
   deeper: HTMLButtonElement;
 };
 
-/** The view cube's faces: name, the axis they're across (x, y, z), which side, placement. */
+/** The view cube's faces: name, the axis they're across (x, y, z), which side, turn. */
 const FACES = [
-  ["Front", 2, 1, "translateZ(24px)"],
-  ["Right", 0, 1, "rotateY(90deg) translateZ(24px)"],
-  ["Top", 1, 1, "rotateX(90deg) translateZ(24px)"],
-  ["Back", 2, -1, "rotateY(180deg) translateZ(24px)"],
-  ["Left", 0, -1, "rotateY(-90deg) translateZ(24px)"],
-  ["Bottom", 1, -1, "rotateX(-90deg) translateZ(24px)"],
+  ["Front", 2, 1, ""],
+  ["Right", 0, 1, "rotateY(90deg)"],
+  ["Top", 1, 1, "rotateX(90deg)"],
+  ["Back", 2, -1, "rotateY(180deg)"],
+  ["Left", 0, -1, "rotateY(-90deg)"],
+  ["Bottom", 1, -1, "rotateX(-90deg)"],
 ] as const;
 
 type Listeners = {
@@ -117,7 +126,7 @@ export async function mountBoard(
     new Uint32Array(colors.map((c) => parseInt(c.slice(1), 16))),
   );
   const overlay = createOverlay(puzzle, colors);
-  sizeLabels(overlay.labels, canvas.clientWidth);
+  sizeOverlay(overlay, canvas.clientWidth);
   canvas.after(overlay.root);
 
   let raf = 0;
@@ -181,7 +190,7 @@ export async function mountBoard(
   const resized = new ResizeObserver(() => {
     if (!fitBuffer(canvas)) return;
     game.resize();
-    sizeLabels(overlay.labels, canvas.clientWidth);
+    sizeOverlay(overlay, canvas.clientWidth);
     refresh(false);
   });
   resized.observe(canvas);
@@ -320,15 +329,27 @@ function fitBuffer(canvas: HTMLCanvasElement): boolean {
   return true;
 }
 
-/** Labels are smaller on a small board; `width` is the canvas's, in CSS px. */
-function sizeLabels(spans: HTMLSpanElement[], width: number) {
+/** Labels and the view cube are smaller on a small board; `width` is the canvas's. */
+function sizeOverlay(overlay: Overlay, width: number) {
   const font = labelFont(width);
-  for (const span of spans) {
+  for (const span of overlay.labels) {
     span.style.padding = `0 ${font * 0.3}px`;
     span.style.borderRadius = `${font * 0.3}px`;
     span.style.fontSize = `${font}px`;
     span.style.lineHeight = `${font * 1.4}px`;
   }
+  const side = viewCubeSide(width);
+  overlay.cubeSide = side;
+  Object.assign(overlay.viewBox.style, {
+    width: `${side}px`,
+    height: `${side}px`,
+    top: `${viewCubeInset(side)}px`,
+    right: `${viewCubeInset(side)}px`,
+  });
+  overlay.faces.forEach((face, i) => {
+    face.style.transform = `${FACES[i][3]} translateZ(${side / 2}px)`;
+    face.style.fontSize = `${Math.max(7, side * 0.19)}px`;
+  });
 }
 
 function createOverlay(puzzle: Puzzle, colors: string[]): Overlay {
@@ -364,6 +385,8 @@ function createOverlay(puzzle: Puzzle, colors: string[]): Overlay {
     labels,
     modeLine,
     viewCube,
+    viewBox: box,
+    cubeSide: 0,
     faces,
     layerBar,
     layerText,
@@ -373,28 +396,27 @@ function createOverlay(puzzle: Puzzle, colors: string[]): Overlay {
 }
 
 /**
- * A 48 px cube in the top-right corner, drawn with CSS 3D transforms. Turned, it reaches
- * up to 18 px past its box, hence the inset.
+ * A cube in the top-right corner, drawn with CSS 3D transforms; `sizeOverlay` sizes it
+ * and places its faces.
  */
 function createViewCube() {
   const box = document.createElement("div");
-  box.style.cssText =
-    "position:absolute;top:1.75rem;right:1.75rem;width:48px;height:48px";
+  box.style.position = "absolute";
   // Only the faces take the pointer: the turned container's own plane cuts through the
   // cube and would catch clicks meant for the far half of a face.
   const viewCube = document.createElement("div");
   viewCube.style.cssText =
     "position:absolute;inset:0;transform-style:preserve-3d";
-  const faces = FACES.map(([name, , , place]) => {
+  const faces = FACES.map(([name]) => {
     const face = document.createElement("button");
     face.type = "button";
     face.textContent = name;
     face.style.cssText =
       "position:absolute;inset:0;display:grid;place-items:center;padding:0;" +
-      "font:inherit;font-size:9px;font-weight:600;letter-spacing:0.04em;" +
+      "font:inherit;font-weight:600;letter-spacing:0.04em;" +
       "text-transform:uppercase;color:#a1a1aa;background:rgba(10,10,10,0.85);" +
       "border:1px solid rgba(255,255,255,0.25);cursor:pointer;pointer-events:auto;" +
-      `backface-visibility:hidden;transform:${place}`;
+      "backface-visibility:hidden";
     face.onpointerenter = () => (face.style.color = "#fff");
     face.onpointerleave = () => (face.style.color = "#a1a1aa");
     return face;
@@ -422,6 +444,10 @@ function showView(game: Game, overlay: Overlay, size: number) {
   overlay.viewCube.style.transform = `rotateX(${-pitch}rad) rotateY(${-yaw}rad)`;
   const depth = game.view_depth();
   const flat = depth >= 0;
+  // Seen as the board is: with the camera's perspective in 3D, straight on in 2D.
+  overlay.viewBox.style.perspective = flat
+    ? "none"
+    : `${viewCubePerspective(overlay.cubeSide, game.view_distance(), size)}px`;
   overlay.faces.forEach((face, i) => {
     face.title = flat ? "Back to 3D" : `${FACES[i][0]} layer in 2D`;
   });
