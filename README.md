@@ -205,4 +205,6 @@ pnpm wasm     # builds packages/board: crates/wasm with wasm-pack, then tsc
 pnpm dev      # http://localhost:3000
 ```
 
+Or, with [just](https://github.com/casey/just) (`brew install just`), from the repo root: `just` builds everything and serves it at <http://localhost:8000>; `just dev` runs the dev server and `just check` runs what CI runs.
+
 Deploys happen from `.github/workflows/deploy.yml` on every push to `main`, every Monday (cron) so a new puzzle appears, and on demand (`gh workflow run deploy.yml -f seed=...`).
