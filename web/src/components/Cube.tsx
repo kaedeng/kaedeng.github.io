@@ -7,7 +7,8 @@ import {
   useState,
   type PointerEvent,
 } from "react";
-import { clueColor, clueText, type Puzzle } from "@/lib/puzzle";
+import { Confetti } from "@/components/Confetti";
+import { clueColor, clueText, PALETTE, type Puzzle } from "@/lib/puzzle";
 
 // Built by `pnpm wasm` into public/wasm and loaded at runtime, outside the bundler.
 type Wasm = typeof import("../../public/wasm/patches_wasm");
@@ -49,9 +50,8 @@ function formatTime(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** Vivid versions of a few clue colours, for the solved message. */
-const SOLVED_GRADIENT =
-  "linear-gradient(90deg, #ff3030, #ffd630, #30ff7a, #30d0ff, #c030ff)";
+/** The clue colours, for the solved message. */
+const SOLVED_GRADIENT = `linear-gradient(90deg, ${PALETTE.slice(0, 6).join(", ")})`;
 
 export function Cube({
   puzzle,
@@ -69,6 +69,7 @@ export function Cube({
   const [error, setError] = useState<string | null>(null);
   const [clock, setClock] = useState<Clock | null>(null);
   const [now, setNow] = useState(0);
+  const [modeLine, setModeLine] = useState("");
 
   // Ticks the visible timer once a second while it runs.
   useEffect(() => {
@@ -150,6 +151,12 @@ export function Cube({
     };
   }, [puzzle, mode, refresh]);
 
+  // A functional update, so a burst of events faster than renders can't restart it.
+  const startClock = () => {
+    const t = performance.now();
+    setClock((c) => c ?? { start: t, end: null });
+    setNow((n) => n || t);
+  };
   const reset = () => {
     const game = gameRef.current;
     if (!game) return;
@@ -165,16 +172,35 @@ export function Cube({
       <div className="relative aspect-square w-full overflow-hidden bg-black sm:aspect-auto sm:h-[min(80vh,720px)]">
         <canvas
           ref={canvasRef}
-          className="h-full w-full cursor-grab touch-none"
+          className="h-full w-full cursor-grab touch-none outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-inset"
+          tabIndex={0}
+          aria-label="3D puzzle board. Arrow keys move a cursor, Shift with up and down changes layer, Space builds a box, Delete removes one."
+          onKeyDown={(e) => {
+            const game = gameRef.current;
+            if (!game || e.metaKey || e.ctrlKey || e.altKey) return;
+            if (!game.key(e.key, e.shiftKey)) return;
+            e.preventDefault();
+            startClock();
+            setModeLine(game.mode_line());
+            refresh(game, true);
+          }}
+          onFocus={(e) => {
+            const game = gameRef.current;
+            if (!game) return;
+            game.set_cursor_visible(e.currentTarget.matches(":focus-visible"));
+            refresh(game, false);
+          }}
+          onBlur={() => {
+            const game = gameRef.current;
+            if (!game) return;
+            game.set_cursor_visible(false);
+            refresh(game, false);
+          }}
           onPointerDown={(e) => {
             const game = gameRef.current;
             if (!game) return;
             e.currentTarget.setPointerCapture(e.pointerId);
-            if (game.pointer_down(...point(e)) && !clock) {
-              const t = performance.now();
-              setClock({ start: t, end: null });
-              setNow(t);
-            }
+            if (game.pointer_down(...point(e))) startClock();
             refresh(game, false);
           }}
           onPointerMove={(e) => {
@@ -213,6 +239,11 @@ export function Cube({
             {clueText(clue)}
           </span>
         ))}
+        {modeLine && (
+          <p className="pointer-events-none absolute bottom-3 left-4 font-mono text-sm text-zinc-300">
+            {modeLine}
+          </p>
+        )}
         {status === null && !error && (
           <p className="absolute inset-0 grid place-items-center text-sm text-zinc-400">
             Loading 3D board…
@@ -249,6 +280,7 @@ export function Cube({
       )}
       {mode === "play" && status?.solved && (
         <div className="mt-8" role="status">
+          <Confetti />
           <p className="text-sm font-medium text-zinc-400">Solved</p>
           <p
             className="mt-2 bg-clip-text text-5xl font-semibold tracking-tighter text-transparent sm:text-6xl"

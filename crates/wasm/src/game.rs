@@ -4,9 +4,10 @@
 //! the canvas events and forwards them, and calls `tick` + `render` on animation frames
 //! only while something moves.
 
+use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
-use patches_core::{Board, BoxRegion, Cell, Puzzle};
+use patches_core::{Board, BoxRegion, Cell, N, Puzzle};
 use three_d::*;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -17,6 +18,7 @@ use crate::geom::{
     marker_half, peeled,
 };
 use crate::input::{Input, Moved, Released, Target};
+use crate::keys::{Cmd, Cursor, Keys, Press, axis_for};
 use crate::pick::pick;
 
 /// Close enough to fill the view, far enough that the whole cube fits from every angle.
@@ -81,9 +83,8 @@ impl Block {
         }
     }
 
-    /// Brightens and eases outward: the solved cube opening up.
+    /// Eases outward: the solved cube opening up.
     fn celebrate(&mut self) {
-        self.color = vivid(self.color);
         let p = block_pose(&self.region);
         self.anim.retarget(Pose {
             center: p.center.map(|c| c * SPREAD),
@@ -130,6 +131,11 @@ pub struct Game {
     puzzle: Puzzle,
     board: Board,
     input: Input,
+    keys: Keys,
+    /// The keyboard's cell, drawn as a white outline once the keyboard is in use.
+    cursor: Cursor,
+    cursor_on: bool,
+    cursor_mesh: Gm<InstancedMesh, ColorMaterial>,
     /// False on the answer page.
     playable: bool,
     /// Set when the player solves the puzzle; the board then locks until Reset.
@@ -180,6 +186,7 @@ impl Game {
                 block_material(&context),
             ),
             outlines: Gm::new(instanced(&context, &cube, &[], Vec::new()), unlit(&context)),
+            cursor_mesh: Gm::new(instanced(&context, &cube, &[], Vec::new()), unlit(&context)),
             blocks: Vec::new(),
             preview: translucent(&context, 90),
             preview_on: false,
@@ -198,6 +205,9 @@ impl Game {
             context,
             puzzle,
             input: Input::default(),
+            keys: Keys::default(),
+            cursor: Cursor::new([N - 1; 3]),
+            cursor_on: false,
             playable: !answer,
             solved: false,
         };
@@ -221,6 +231,7 @@ impl Game {
             &self.markers,
             &self.blocks_mesh,
             &self.outlines,
+            &self.cursor_mesh,
         ];
         if self.preview_on {
             objects.push(&self.preview);
@@ -300,21 +311,35 @@ impl Game {
 
     /// Returns true when the board changed.
     pub fn pointer_up(&mut self, x: f32, y: f32) -> bool {
-        // A box that would overlap another is not built; one that breaks a rule is built
-        // and shows as a red outline.
-        let changed = match self.input.up(self.pick_cell(x, y)) {
-            Released::Place(r) => self.place(r),
-            Released::Remove(r) => self.remove(r.min),
-            Released::Replace { old, new } => self.extend(old, new),
-            Released::Nothing => false,
-        };
-        if changed && self.playable && self.board.is_solved() {
-            self.celebrate();
-        }
-        // The first corner of a click-click box shows as a one-cell preview.
-        self.set_preview(self.input.pending().map(|c| BoxRegion::spanning(c, c)));
+        let released = self.input.up(self.pick_cell(x, y));
+        let changed = self.apply(released);
+        self.show_selection();
         self.set_hover(self.pick_cell(x, y));
         changed
+    }
+
+    /// Handles a key press (`KeyboardEvent.key`). Returns true when it was a board key, so
+    /// the page should not act on it too.
+    pub fn key(&mut self, key: &str, shift: bool) -> bool {
+        match self.keys.press(key, shift, self.cursor.selecting()) {
+            Press::Ignored => false,
+            Press::Consumed => true,
+            Press::Run(cmd) => {
+                self.run(cmd);
+                true
+            }
+        }
+    }
+
+    /// Shows or hides the keyboard cursor, e.g. when the board gains or loses focus.
+    pub fn set_cursor_visible(&mut self, on: bool) {
+        self.cursor_on = on && self.playable && !self.solved;
+        self.show_cursor();
+    }
+
+    /// A vim-style status line, empty unless vim keys are on or a `:` command is typed.
+    pub fn mode_line(&self) -> String {
+        self.keys.mode_line(self.cursor.selecting())
     }
 
     /// Zooms by `delta` (the full range is 1). Returns false at either end, so the page
@@ -370,7 +395,9 @@ impl Game {
             self.solved = false;
             self.board.clear();
             self.input.cancel();
+            self.cursor.cancel();
             self.set_preview(None);
+            self.show_cursor();
             for b in self.blocks.iter_mut().filter(|b| !b.removing) {
                 b.dismiss();
             }
@@ -382,9 +409,112 @@ impl Game {
     fn celebrate(&mut self) {
         self.solved = true;
         self.input.cancel();
+        self.cursor.cancel();
+        self.cursor_on = false;
+        self.show_cursor();
         for b in self.blocks.iter_mut().filter(|b| !b.removing) {
             b.celebrate();
         }
+    }
+
+    /// Carries out a finished press or key command. A box that would overlap another is not
+    /// built; one that breaks a rule is built and shows as a red outline. Returns true when
+    /// the board changed.
+    fn apply(&mut self, released: Released) -> bool {
+        let changed = match released {
+            Released::Place(r) => self.place(r),
+            Released::Remove(r) => self.remove(r.min),
+            Released::Replace { old, new } => self.extend(old, new),
+            Released::Nothing => false,
+        };
+        if changed && self.playable && self.board.is_solved() {
+            self.celebrate();
+        }
+        changed
+    }
+
+    /// Turning and zooming work anywhere; the rest only on a board still in play.
+    fn run(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Turn(d) => {
+                self.yaw += f32::from(d) * FRAC_PI_4;
+                self.update_camera();
+            }
+            Cmd::Zoom(d) => {
+                self.zoom_by(f32::from(d) * 0.25);
+            }
+            _ if self.playable && !self.solved => self.run_on_board(cmd),
+            _ => {}
+        }
+    }
+
+    fn run_on_board(&mut self, cmd: Cmd) {
+        self.cursor_on = true;
+        match cmd {
+            Cmd::Move(dir, n) => {
+                let (axis, sign) = axis_for(dir, self.yaw);
+                self.cursor.step(axis, sign * n as i8, &self.shown);
+            }
+            Cmd::Select => {
+                let block = self
+                    .board
+                    .box_at(self.cursor.cell)
+                    .map(|i| self.board.boxes()[i]);
+                let released = self.cursor.select(block);
+                self.apply(released);
+            }
+            Cmd::Remove => {
+                self.cursor.cancel();
+                self.remove(self.cursor.cell);
+            }
+            Cmd::Cancel => self.cursor.cancel(),
+            Cmd::Clue(d) => self.jump_to_clue(d),
+            Cmd::Top => self.cursor.cell[1] = self.shown.max[1],
+            Cmd::Bottom => self.cursor.cell[1] = self.shown.min[1],
+            Cmd::Turn(_) | Cmd::Zoom(_) => {}
+        }
+        self.show_cursor();
+        self.show_selection();
+    }
+
+    /// Moves the cursor to the next (`d` = 1) or previous (-1) shown clue.
+    fn jump_to_clue(&mut self, d: i8) {
+        let clues: Vec<Cell> = self
+            .puzzle
+            .clues
+            .iter()
+            .map(|c| c.cell)
+            .filter(|&c| self.shown.contains(c))
+            .collect();
+        let n = clues.len() as i32;
+        if n == 0 {
+            return;
+        }
+        let next = match clues.iter().position(|&c| c == self.cursor.cell) {
+            Some(i) => (i as i32 + i32::from(d)).rem_euclid(n),
+            None if d > 0 => 0,
+            None => n - 1,
+        };
+        self.cursor.cell = clues[next as usize];
+    }
+
+    fn show_cursor(&mut self) {
+        let edges = if self.cursor_on {
+            box_edges(&Pose {
+                center: cell_center(self.cursor.cell),
+                half: [0.5; 3],
+            })
+        } else {
+            Vec::new()
+        };
+        self.cursor_mesh
+            .set_instances(&instances(&edges, vec![Srgba::WHITE; edges.len()]));
+    }
+
+    /// The keyboard's box in progress, else the first corner of a click-click box.
+    fn show_selection(&mut self) {
+        let pending = self.input.pending().map(|c| BoxRegion::spanning(c, c));
+        self.set_preview(self.cursor.selection().or(pending));
     }
 
     fn place(&mut self, r: BoxRegion) -> bool {
@@ -541,8 +671,10 @@ impl Game {
         };
         if shown != self.shown {
             self.shown = shown;
+            self.cursor.clamp(&shown);
             self.show_scenery();
             self.sync_blocks();
+            self.show_cursor();
         }
     }
 
@@ -640,12 +772,6 @@ fn marker_instances(puzzle: &Puzzle, shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba
         }
     }
     (poses, colors)
-}
-
-/// A saturated version of a pastel from `PALETTE`: 0xb1 channels go deep, 0xf1 stay bright.
-fn vivid(c: Srgba) -> Srgba {
-    let f = |v: u8| ((f32::from(v) - 177.0) / 64.0 * 207.0 + 48.0).clamp(0.0, 255.0) as u8;
-    Srgba::new_opaque(f(c.r), f(c.g), f(c.b))
 }
 
 /// White, lit, and tinted per instance by the clue colour.

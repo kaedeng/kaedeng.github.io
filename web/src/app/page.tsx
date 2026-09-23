@@ -38,6 +38,11 @@ export default function Home() {
               Scroll or pinch to zoom. Zoom in far enough and the layer nearest
               you peels away.
             </li>
+            <li>
+              Keyboard: Tab to the board. Arrows move, Shift+↑/↓ changes layer,
+              Space starts and places a box (on a box it grows it), Delete
+              removes, Esc cancels, Shift+←/→ turns the cube, +/− zoom.
+            </li>
           </ul>
         </section>
         <section>
