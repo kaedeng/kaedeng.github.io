@@ -1,4 +1,5 @@
 import init, { Game, generate } from "../wasm/patches_wasm.js";
+import { Fingers } from "./fingers.js";
 import {
   labelFont,
   viewCubeInset,
@@ -280,6 +281,8 @@ function inputListeners(
 ): Listeners {
   const point = (e: PointerEvent) =>
     [e.offsetX, e.offsetY, e.timeStamp] as const;
+  // Two fingers pinch to zoom; one finger or a mouse presses as before.
+  const fingers = new Fingers();
   return {
     // Wheel and trackpad pinch (ctrl+wheel) zoom; at either end the page scrolls instead.
     wheel: (e) => {
@@ -306,12 +309,23 @@ function inputListeners(
     },
     pointerdown: (e) => {
       canvas.setPointerCapture(e.pointerId);
-      pointer.down(...point(e));
+      const what = fingers.down(e.pointerId, e.offsetX, e.offsetY);
+      if (what === "press") pointer.down(...point(e));
+      if (what === "pinch") pointer.cancel(...point(e));
     },
-    pointermove: (e) => pointer.move(...point(e)),
-    pointerup: (e) => pointer.up(...point(e)),
+    pointermove: (e) => {
+      const zoom = fingers.move(e.pointerId, e.offsetX, e.offsetY);
+      if (zoom === null) pointer.move(...point(e));
+      else if (game.zoom_by(zoom)) refresh(false);
+    },
+    pointerup: (e) => {
+      if (fingers.up(e.pointerId)) pointer.up(...point(e));
+    },
     pointerleave: (e) => pointer.leave(...point(e)),
-    pointercancel: (e) => pointer.cancel(...point(e)),
+    pointercancel: (e) => {
+      fingers.up(e.pointerId);
+      pointer.cancel(...point(e));
+    },
   };
 }
 

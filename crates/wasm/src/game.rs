@@ -512,10 +512,11 @@ impl Game {
         vec![yaw, pitch]
     }
 
+    /// Drops the press, e.g. when a second finger turns it into a pinch. A box half drawn
+    /// stays, as after a turn.
     pub fn pointer_cancel(&mut self) {
         self.input.cancel();
-        self.cursor.cancel();
-        self.set_preview(None);
+        self.show_selection();
         self.set_hover(None);
     }
 
