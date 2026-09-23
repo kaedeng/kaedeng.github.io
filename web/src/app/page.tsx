@@ -25,6 +25,11 @@ export default function Home() {
             <li>Click a box to remove it, or drag from it to extend it.</li>
             <li>Drag the space around the cube to turn it.</li>
             <li>
+              Click a face of the small cube in the corner to see one layer
+              flat; ‹ › or Shift+↑/↓ step through the layers. Click it again or
+              drag around the layer to go back to 3D.
+            </li>
+            <li>
               Scroll or pinch to zoom. Zoom in far enough and the layer nearest
               you peels away.
             </li>

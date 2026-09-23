@@ -26,7 +26,25 @@ type Overlay = {
   root: HTMLDivElement;
   labels: HTMLSpanElement[];
   modeLine: HTMLParagraphElement;
+  /** Turns with the camera; clicking a face shows one layer face-on. */
+  viewCube: HTMLDivElement;
+  faces: HTMLButtonElement[];
+  /** Pages through the layers in 2D; hidden in 3D. */
+  layerBar: HTMLDivElement;
+  layerText: HTMLSpanElement;
+  nearer: HTMLButtonElement;
+  deeper: HTMLButtonElement;
 };
+
+/** The view cube's faces: name, the axis they're across (x, y, z), which side, placement. */
+const FACES = [
+  ["Front", 2, 1, "translateZ(24px)"],
+  ["Right", 0, 1, "rotateY(90deg) translateZ(24px)"],
+  ["Top", 1, 1, "rotateX(90deg) translateZ(24px)"],
+  ["Back", 2, -1, "rotateY(180deg) translateZ(24px)"],
+  ["Left", 0, -1, "rotateY(-90deg) translateZ(24px)"],
+  ["Bottom", 1, -1, "rotateX(-90deg) translateZ(24px)"],
+] as const;
 
 type Listeners = {
   [K in keyof HTMLElementEventMap]?: (e: HTMLElementEventMap[K]) => void;
@@ -86,6 +104,7 @@ export async function mountBoard(
   };
   const refresh = (boardChanged: boolean) => {
     placeLabels(game, overlay.labels);
+    showView(game, overlay, puzzle.size);
     if (boardChanged) {
       options.onStatus?.({
         boxes: game.box_count(),
@@ -103,6 +122,22 @@ export async function mountBoard(
     // Not passive, so a zooming wheel can stop the page from scrolling.
     canvas.addEventListener(type, fn, { passive: false });
   }
+  overlay.faces.forEach((face, i) => {
+    face.onclick = () => {
+      game.view_face(FACES[i][1], FACES[i][2]);
+      // So the arrow keys go on to move the cursor.
+      canvas.focus({ preventScroll: true });
+      refresh(false);
+    };
+  });
+  overlay.nearer.onclick = () => {
+    game.step_layer(-1);
+    refresh(false);
+  };
+  overlay.deeper.onclick = () => {
+    game.step_layer(1);
+    refresh(false);
+  };
   refresh(true);
 
   return {
@@ -194,8 +229,92 @@ function createOverlay(puzzle: Puzzle): Overlay {
   modeLine.style.cssText =
     "position:absolute;bottom:0.75rem;left:1rem;margin:0;" +
     "font-size:0.875rem;line-height:1.25rem;color:#d4d4d8";
-  root.append(...labels, modeLine);
-  return { root, labels, modeLine };
+  const { box, viewCube, faces } = createViewCube();
+  const layerBar = document.createElement("div");
+  layerBar.style.cssText =
+    "position:absolute;bottom:0.75rem;right:0.75rem;display:none;" +
+    "align-items:center;gap:0.25rem;pointer-events:auto;" +
+    "font-size:0.875rem;line-height:1.25rem;color:#d4d4d8";
+  const nearer = pagerButton("‹", "Nearer layer");
+  const deeper = pagerButton("›", "Deeper layer");
+  const layerText = document.createElement("span");
+  layerText.style.cssText =
+    "padding:0 0.25rem;font-variant-numeric:tabular-nums";
+  layerBar.append(nearer, layerText, deeper);
+  root.append(...labels, modeLine, box, layerBar);
+  return {
+    root,
+    labels,
+    modeLine,
+    viewCube,
+    faces,
+    layerBar,
+    layerText,
+    nearer,
+    deeper,
+  };
+}
+
+/**
+ * A 48 px cube in the top-right corner, drawn with CSS 3D transforms. Turned, it reaches
+ * up to 18 px past its box, hence the inset.
+ */
+function createViewCube() {
+  const box = document.createElement("div");
+  box.style.cssText =
+    "position:absolute;top:1.75rem;right:1.75rem;width:48px;height:48px";
+  // Only the faces take the pointer: the turned container's own plane cuts through the
+  // cube and would catch clicks meant for the far half of a face.
+  const viewCube = document.createElement("div");
+  viewCube.style.cssText =
+    "position:absolute;inset:0;transform-style:preserve-3d";
+  const faces = FACES.map(([name, , , place]) => {
+    const face = document.createElement("button");
+    face.type = "button";
+    face.textContent = name;
+    face.style.cssText =
+      "position:absolute;inset:0;display:grid;place-items:center;padding:0;" +
+      "font:inherit;font-size:9px;font-weight:600;letter-spacing:0.04em;" +
+      "text-transform:uppercase;color:#a1a1aa;background:rgba(10,10,10,0.85);" +
+      "border:1px solid rgba(255,255,255,0.25);cursor:pointer;pointer-events:auto;" +
+      `backface-visibility:hidden;transform:${place}`;
+    face.onpointerenter = () => (face.style.color = "#fff");
+    face.onpointerleave = () => (face.style.color = "#a1a1aa");
+    return face;
+  });
+  viewCube.append(...faces);
+  box.append(viewCube);
+  return { box, viewCube, faces };
+}
+
+function pagerButton(text: string, label: string): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = text;
+  b.ariaLabel = label;
+  b.style.cssText =
+    "width:1.75rem;height:1.75rem;padding:0;font:inherit;color:inherit;" +
+    "background:none;border:1px solid rgba(255,255,255,0.15);border-radius:0.375rem;" +
+    "cursor:pointer";
+  return b;
+}
+
+/** Turns the view cube with the camera, and shows the layer bar in 2D. */
+function showView(game: Game, overlay: Overlay, size: number) {
+  const [yaw, pitch] = game.view_angles();
+  overlay.viewCube.style.transform = `rotateX(${-pitch}rad) rotateY(${-yaw}rad)`;
+  const depth = game.view_depth();
+  const flat = depth >= 0;
+  overlay.faces.forEach((face, i) => {
+    face.title = flat ? "Back to 3D" : `${FACES[i][0]} layer in 2D`;
+  });
+  overlay.layerBar.style.display = flat ? "flex" : "none";
+  overlay.layerText.textContent = `Layer ${depth + 1} of ${size}`;
+  overlay.nearer.disabled = depth <= 0;
+  overlay.deeper.disabled = depth >= size - 1;
+  for (const b of [overlay.nearer, overlay.deeper]) {
+    b.style.opacity = b.disabled ? "0.35" : "";
+  }
 }
 
 function placeLabels(game: Game, spans: HTMLSpanElement[]) {

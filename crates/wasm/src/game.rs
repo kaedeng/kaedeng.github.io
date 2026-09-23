@@ -18,11 +18,16 @@ use crate::geom::{
     marker_half, peeled,
 };
 use crate::input::{Input, Moved, Released, Target};
-use crate::keys::{Cmd, Cursor, Keys, Press, axis_for};
+use crate::keys::{Cmd, Cursor, Dir, Keys, Press, axis_for};
 use crate::pick::pick;
+use crate::view::{Flat, orbit};
 
 /// Close enough to fill the view, far enough that the whole cube fits from every angle.
 const CAMERA_DISTANCE: f32 = 12.0;
+const FIELD_OF_VIEW: Deg<f32> = Deg(35.0);
+/// CSS px kept clear around the layer in 2D, so the view cube in the corner never covers
+/// a cell.
+const FLAT_MARGIN: f32 = 80.0;
 /// How much closer the camera gets at full zoom.
 const ZOOM_RANGE: f32 = 4.0;
 /// Zoomed in at least this far (0..1), the layer nearest the camera is peeled away.
@@ -91,7 +96,11 @@ pub struct Game {
     pitch: f32,
     /// 0 (whole cube in view) to 1 (closest, nearest layer peeled).
     zoom: f32,
-    /// The cells drawn and pickable: the whole cube, or the cube without a peeled layer.
+    /// Set while one layer is shown face-on; `yaw`, `pitch` and `zoom` then wait for the
+    /// return to 3D.
+    flat: Option<Flat>,
+    /// The cells drawn and pickable: the whole cube, the cube without a peeled layer, or the
+    /// one layer shown in 2D.
     shown: BoxRegion,
     wires: Gm<InstancedMesh, ColorMaterial>,
     /// White lattice dots plus a round marker per any-shape clue.
@@ -148,7 +157,7 @@ impl Game {
             vec3(0.0, 0.0, CAMERA_DISTANCE),
             vec3(0.0, 0.0, 0.0),
             vec3(0.0, 1.0, 0.0),
-            Deg(35.0),
+            FIELD_OF_VIEW,
             0.1,
             100.0,
         );
@@ -189,6 +198,7 @@ impl Game {
             yaw: 0.65,
             pitch: 0.4,
             zoom: 0.0,
+            flat: None,
             shown: WHOLE,
             context,
             puzzle,
@@ -245,11 +255,19 @@ impl Game {
         moving
     }
 
-    /// Screen position (CSS px, top-left origin) of every clue's top face, flattened as
-    /// `[x0, y0, x1, y1, ...]`; NaN for a clue in a peeled layer.
+    /// Screen position (CSS px, top-left origin) of every clue's top face (in 2D, the top
+    /// of its cell on screen, clear of the marker), flattened as `[x0, y0, x1, y1, ...]`;
+    /// NaN for a clue in a hidden layer.
     pub fn labels(&self) -> Vec<f32> {
         let s = self.scale();
         let h = self.canvas.height() as f32;
+        let lift = match self.flat {
+            Some(f) => {
+                let (yaw, pitch) = f.angles();
+                Vec3::from(orbit(yaw, pitch).1) * 0.34
+            }
+            None => vec3(0.0, 0.5, 0.0),
+        };
         self.puzzle
             .clues
             .iter()
@@ -257,7 +275,7 @@ impl Game {
                 if !self.shown.contains(c.cell) {
                     return [f32::NAN; 2];
                 }
-                let top = Vec3::from(cell_center(c.cell)) + vec3(0.0, 0.5, 0.0);
+                let top = Vec3::from(cell_center(c.cell)) + lift;
                 let p = self.camera.pixel_at_position(top);
                 [p.x / s, (h - p.y) / s]
             })
@@ -285,6 +303,7 @@ impl Game {
         };
         match self.input.moved((x, y), hover, t) {
             Moved::Orbit { dx, dy } => {
+                self.leave_flat();
                 self.yaw -= dx * ORBIT_SPEED;
                 self.pitch = (self.pitch + dy * ORBIT_SPEED).clamp(PITCH_RANGE.0, PITCH_RANGE.1);
                 self.update_camera();
@@ -331,16 +350,43 @@ impl Game {
         self.keys.mode_line(self.cursor.selecting())
     }
 
-    /// Zooms by `delta` (the full range is 1). Returns false at either end, so the page
-    /// can scroll instead.
+    /// Zooms by `delta` (the full range is 1). Returns false at either end and in 2D, so
+    /// the page can scroll instead.
     pub fn zoom_by(&mut self, delta: f32) -> bool {
         let zoom = (self.zoom + delta).clamp(0.0, 1.0);
-        if zoom == self.zoom {
+        if zoom == self.zoom || self.flat.is_some() {
             return false;
         }
         self.zoom = zoom;
         self.update_camera();
         true
+    }
+
+    /// Shows one layer face-on from outside a face (`axis` 0-2 is x, y, z; `sign` is 1 for
+    /// the + side), starting with the face's own layer. On the face already shown, goes back
+    /// to the 3D view it came from.
+    pub fn view_face(&mut self, axis: usize, sign: i8) {
+        let same = self.flat.is_some_and(|f| f.axis == axis && f.sign == sign);
+        self.set_flat((!same).then(|| Flat::new(axis, sign)));
+    }
+
+    /// In 2D, shows the layer `d` layers deeper (d > 0) or nearer the face (d < 0).
+    pub fn step_layer(&mut self, d: i8) {
+        if let Some(mut f) = self.flat {
+            f.step(-f.sign * d);
+            self.set_flat(Some(f));
+        }
+    }
+
+    /// How many layers in from its face the 2D view is (0 is the face's own layer); -1 in 3D.
+    pub fn view_depth(&self) -> i32 {
+        self.flat.map_or(-1, |f| i32::from(f.depth()))
+    }
+
+    /// The camera's `[yaw, pitch]` in radians, e.g. to turn a view cube with it.
+    pub fn view_angles(&self) -> Vec<f32> {
+        let (yaw, pitch) = self.angles();
+        vec![yaw, pitch]
     }
 
     pub fn pointer_cancel(&mut self) {
@@ -426,6 +472,7 @@ impl Game {
     fn run(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Turn(d) => {
+                self.leave_flat();
                 self.yaw += f32::from(d) * FRAC_PI_4;
                 self.update_camera();
             }
@@ -440,10 +487,7 @@ impl Game {
     fn run_on_board(&mut self, cmd: Cmd) {
         self.cursor_on = true;
         match cmd {
-            Cmd::Move(dir, n) => {
-                let (axis, sign) = axis_for(dir, self.yaw);
-                self.cursor.step(axis, sign * n as i8, &self.shown);
-            }
+            Cmd::Move(dir, n) => self.move_cursor(dir, n as i8),
             Cmd::Select => {
                 let block = self
                     .board
@@ -464,6 +508,37 @@ impl Game {
         }
         self.show_cursor();
         self.show_selection();
+    }
+
+    /// Moves the cursor `n` cells. In 2D, a move into or out of the screen turns to the
+    /// next layer and takes the cursor along.
+    fn move_cursor(&mut self, dir: Dir, n: i8) {
+        let (axis, sign) = match self.flat {
+            Some(f) => f.axis_for(dir),
+            None => axis_for(dir, self.yaw),
+        };
+        if let Some(mut f) = self.flat.filter(|f| f.axis == axis) {
+            f.step(sign * n);
+            self.set_flat(Some(f));
+        }
+        self.cursor.step(axis, sign * n, &self.shown);
+    }
+
+    /// Switches between 2D (`Some`) and 3D.
+    fn set_flat(&mut self, flat: Option<Flat>) {
+        self.flat = flat;
+        self.update_camera();
+        self.show_selection();
+    }
+
+    /// Goes back to 3D, turned to look where the 2D view did, e.g. when the player orbits.
+    fn leave_flat(&mut self) {
+        if let Some(f) = self.flat {
+            let (yaw, pitch) = f.angles();
+            self.yaw = yaw;
+            self.pitch = pitch.clamp(PITCH_RANGE.0, PITCH_RANGE.1);
+            self.set_flat(None);
+        }
     }
 
     /// Moves the cursor to the next (`d` = 1) or previous (-1) shown clue.
@@ -500,9 +575,13 @@ impl Game {
             .set_instances(&instances(&edges, vec![Srgba::WHITE; edges.len()]));
     }
 
-    /// The keyboard's box in progress, else the first corner of a click-click box.
+    /// The keyboard's box in progress, else the first corner of a click-click box. In 2D, a
+    /// first corner on another layer shows where it lines up on this one.
     fn show_selection(&mut self) {
-        let pending = self.input.pending().map(|c| BoxRegion::spanning(c, c));
+        let pending = self.input.pending().map(|c| {
+            let c = self.flat.map_or(c, |f| f.project(c));
+            BoxRegion::spanning(c, c)
+        });
         self.set_preview(self.cursor.selection().or(pending));
     }
 
@@ -644,16 +723,36 @@ impl Game {
         self.canvas.width() as f32 / self.canvas.client_width().max(1) as f32
     }
 
+    /// The orbit angles in use: the 2D view's face, else the 3D camera's.
+    fn angles(&self) -> (f32, f32) {
+        self.flat.map_or((self.yaw, self.pitch), |f| f.angles())
+    }
+
     fn update_camera(&mut self) {
-        let (sy, cy) = self.yaw.sin_cos();
-        let (sp, cp) = self.pitch.sin_cos();
-        let eye = vec3(cp * sy, sp, cp * cy) * (CAMERA_DISTANCE - self.zoom * ZOOM_RANGE);
+        let (yaw, pitch) = self.angles();
+        let (out, up) = orbit(yaw, pitch);
+        let distance = match self.flat {
+            Some(_) => CAMERA_DISTANCE,
+            None => CAMERA_DISTANCE - self.zoom * ZOOM_RANGE,
+        };
+        let eye = Vec3::from(out) * distance;
         self.camera
-            .set_view(eye, vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));
-        let shown = if self.zoom >= PEEL_AT {
-            peeled(eye.into())
-        } else {
-            WHOLE
+            .set_view(eye, vec3(0.0, 0.0, 0.0), Vec3::from(up));
+        let shown = match self.flat {
+            Some(f) => {
+                let height = self.flat_height() / distance;
+                self.camera.set_orthographic_projection(height, 0.1, 100.0);
+                f.region()
+            }
+            None => {
+                self.camera
+                    .set_perspective_projection(FIELD_OF_VIEW, 0.1, 100.0);
+                if self.zoom >= PEEL_AT {
+                    peeled(eye.into())
+                } else {
+                    WHOLE
+                }
+            }
         };
         if shown != self.shown {
             self.shown = shown;
@@ -662,6 +761,15 @@ impl Game {
             self.sync_blocks();
             self.show_cursor();
         }
+    }
+
+    /// World units from the bottom to the top of the canvas in 2D: the layer fills the
+    /// smaller side less `FLAT_MARGIN` each way, or half of it on a tiny canvas.
+    fn flat_height(&self) -> f32 {
+        let (w, h) = (self.canvas.width() as f32, self.canvas.height() as f32);
+        let side = w.min(h);
+        let cell = (side - 2.0 * FLAT_MARGIN * self.scale()).max(side / 2.0) / f32::from(N);
+        h / cell.max(1.0)
     }
 
     /// Redraws the lattice and clue markers for the shown cells.
