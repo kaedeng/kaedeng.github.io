@@ -28,7 +28,7 @@ Say which you picked, what the alternative was, and what you gave up by not taki
 
 "There was no alternative" is not an answer. Find the fork.
 
-Plain HTML vs framework. I chose framework since the site is mostly one interactive 3D board (Rust compiled to WebAssembly) plus two pages that share the same pieces (the board, the layer grids, the header), and Next.js with Tailwind let me build those once as components instead of copying markup between pages. The alternative was the plain HTML and CSS template the course recommends. What I gave up: no build step and an instant deploy. The README warned that Next.js static export tends to eat time on toolchain problems, and it did cost setup: Pages had to switch from "deploy from a branch" to a GitHub Actions build, and the wasm file had to be loaded at runtime, outside Next's bundler, to work in the static export, until I moved the board into its own package that the bundler can handle.
+Plain HTML vs framework. I chose framework since the site is mostly one interactive 3D board (Rust compiled to WebAssembly) plus two pages that share the same pieces (the board, the layer grids, the header), and Next.js with Tailwind let me build those once as components instead of copying markup between pages. The alternative was the plain HTML and CSS template the course recommended. What I gave up: no build step and an instant deploy. Next.js's static export eats time on toolchain problems. My Github Pages setup had to switch from "deploy from a branch" to a GitHub Actions build.
 
 ---
 
@@ -57,7 +57,7 @@ Link to your `verification/` folder.
 
 [verifications folder](./verification/)
 
-The check is fetching the live URL (`curl -s https://kaedeng.github.io/`, saved as `verification/fetch.txt`) and looking for the page heading `Puzzle 2026-W39`, which only exists in the page Next.js builds; the screenshot shows the same page in a browser with the URL bar visible. It would have failed if GitHub Pages were still set to deploy from the main branch instead of the Actions build: the URL would have shown the repo's README, not the game. On top of that, every push runs the Rust tests (the puzzle rules, the generator, picking and keyboard input), lint and a full build in CI, and the site only deploys if they all pass.
+The check is fetching the live URL (`curl -s https://kaedeng.github.io/`, saved as `verification/fetch.txt`) and looking for the page heading `Puzzle 2026-W39`, which only exists in the page Next.js builds. On top of that, every push runs the Rust tests (the puzzle rules, the generator, picking and keyboard input), lint and a full build in CI, and the site only deploys if they all pass. The last thing I passed everything through before a commit went through was using Claude's Chrome extension, which allowed claude to explore by itself, sort of like a Playwright script.
 
 ---
 
