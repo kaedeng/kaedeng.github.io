@@ -8,38 +8,36 @@ pub enum Rejection {
     Shape { expected: Shape, got: Shape },
 }
 
-/// The Patches rules for one box: no overlap, exactly one clue inside, and its volume and
-/// shape match that clue where the clue gives them.
-pub fn check(clues: &[Clue], placed: u64, candidate: &BoxRegion) -> Result<(), Rejection> {
-    if candidate.mask() & placed != 0 {
-        return Err(Rejection::Overlap);
-    }
+/// The Patches rule one box breaks on its own, if any: exactly one clue inside, and its
+/// volume and shape match that clue where the clue gives them.
+pub fn fault(clues: &[Clue], candidate: &BoxRegion) -> Option<Rejection> {
     let inside: Vec<&Clue> = clues
         .iter()
         .filter(|c| candidate.contains(c.cell))
         .collect();
     if inside.len() != 1 {
-        return Err(Rejection::ClueCount(inside.len()));
+        return Some(Rejection::ClueCount(inside.len()));
     }
     let clue = inside[0];
     if let Some(expected) = clue.volume
         && expected != candidate.volume()
     {
-        return Err(Rejection::Volume {
+        return Some(Rejection::Volume {
             expected,
             got: candidate.volume(),
         });
     }
     match clue.shape {
-        Some(expected) if expected != candidate.shape() => Err(Rejection::Shape {
+        Some(expected) if expected != candidate.shape() => Some(Rejection::Shape {
             expected,
             got: candidate.shape(),
         }),
-        _ => Ok(()),
+        _ => None,
     }
 }
 
-/// A player's in-progress tiling.
+/// A player's in-progress tiling. Boxes may break the rules (they show as wrong); they may
+/// not overlap.
 #[derive(Clone, Debug)]
 pub struct Board {
     clues: Vec<Clue>,
@@ -65,7 +63,9 @@ impl Board {
     }
 
     pub fn place(&mut self, b: BoxRegion) -> Result<(), Rejection> {
-        check(&self.clues, self.placed, &b)?;
+        if b.mask() & self.placed != 0 {
+            return Err(Rejection::Overlap);
+        }
         self.placed |= b.mask();
         self.boxes.push(b);
         Ok(())
@@ -76,13 +76,18 @@ impl Board {
         self.boxes.iter().position(|b| b.contains(cell))
     }
 
-    /// Index into `clues()` of the one clue inside placed box `box_index`.
-    pub fn clue_of(&self, box_index: usize) -> usize {
-        let b = &self.boxes[box_index];
-        self.clues
-            .iter()
-            .position(|c| b.contains(c.cell))
-            .expect("a placed box holds exactly one clue")
+    /// The rule box `b` breaks, if any.
+    pub fn fault(&self, b: &BoxRegion) -> Option<Rejection> {
+        fault(&self.clues, b)
+    }
+
+    /// Index into `clues()` of the clue inside `b`, if it holds exactly one.
+    pub fn clue_of(&self, b: &BoxRegion) -> Option<usize> {
+        let mut inside = (0..self.clues.len()).filter(|&i| b.contains(self.clues[i].cell));
+        match (inside.next(), inside.next()) {
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
     }
 
     pub fn remove_at(&mut self, cell: Cell) -> bool {
@@ -94,11 +99,11 @@ impl Board {
         true
     }
 
-    /// Swaps placed box `old` for `new`, keeping `old` if `new` breaks the rules.
+    /// Swaps placed box `old` for `new`, keeping `old` if `new` would overlap another box.
     pub fn replace(&mut self, old: BoxRegion, new: BoxRegion) -> Result<(), Rejection> {
         self.remove_at(old.min);
         self.place(new).inspect_err(|_| {
-            self.place(old).expect("the old box was legal where it was");
+            self.place(old).expect("the old box fitted where it was");
         })
     }
 
@@ -107,8 +112,9 @@ impl Board {
         self.placed = 0;
     }
 
+    /// Every cell covered, and no box breaks a rule.
     pub fn is_solved(&self) -> bool {
-        self.placed == u64::MAX
+        self.placed == u64::MAX && self.boxes.iter().all(|b| self.fault(b).is_none())
     }
 }
 
@@ -142,45 +148,45 @@ mod tests {
     }
 
     #[test]
-    fn rejects_two_clues_and_no_clue() {
+    fn places_but_faults_two_clues_and_no_clue() {
         let mut b = Board::new(slab_clues());
         let two = BoxRegion {
             min: [0, 0, 0],
             max: [3, 3, 1],
         };
-        assert_eq!(b.place(two), Err(Rejection::ClueCount(2)));
+        assert_eq!(b.place(two), Ok(()));
+        assert_eq!(b.fault(&two), Some(Rejection::ClueCount(2)));
         let none = BoxRegion {
-            min: [1, 1, 0],
-            max: [3, 3, 0],
+            min: [1, 1, 2],
+            max: [3, 3, 2],
         };
-        assert_eq!(b.place(none), Err(Rejection::ClueCount(0)));
+        assert_eq!(b.place(none), Ok(()));
+        assert_eq!(b.fault(&none), Some(Rejection::ClueCount(0)));
     }
 
     #[test]
-    fn rejects_wrong_volume_but_accepts_hidden_volume() {
-        let mut b = Board::new(slab_clues());
+    fn faults_wrong_volume_but_not_hidden_volume() {
         let half = BoxRegion {
             min: [0, 0, 0],
             max: [3, 1, 0],
         };
         assert_eq!(
-            b.place(half),
-            Err(Rejection::Volume {
+            Board::new(slab_clues()).fault(&half),
+            Some(Rejection::Volume {
                 expected: 16,
                 got: 8
             })
         );
-
-        let mut hidden = Board::new(vec![Clue {
+        let hidden = Board::new(vec![Clue {
             cell: [0, 0, 0],
             volume: None,
             shape: None,
         }]);
-        assert_eq!(hidden.place(half), Ok(()));
+        assert_eq!(hidden.fault(&half), None);
     }
 
     #[test]
-    fn rejects_wrong_shape() {
+    fn faults_wrong_shape() {
         let clue = |shape| {
             vec![Clue {
                 cell: [0, 0, 0],
@@ -189,13 +195,13 @@ mod tests {
             }]
         };
         assert_eq!(
-            Board::new(clue(Shape::Tall)).place(slab(0)),
-            Err(Rejection::Shape {
+            Board::new(clue(Shape::Tall)).fault(&slab(0)),
+            Some(Rejection::Shape {
                 expected: Shape::Tall,
                 got: Shape::WallX
             })
         );
-        assert_eq!(Board::new(clue(Shape::WallX)).place(slab(0)), Ok(()));
+        assert_eq!(Board::new(clue(Shape::WallX)).fault(&slab(0)), None);
     }
 
     #[test]
@@ -220,7 +226,16 @@ mod tests {
     }
 
     #[test]
-    fn replace_swaps_a_box_or_keeps_it() {
+    fn a_full_cube_with_a_wrong_box_is_not_solved() {
+        let mut b = Board::new(slab_clues());
+        b.place(slab(0)).unwrap();
+        b.place(slab(1)).unwrap();
+        b.place(BoxRegion::spanning([0, 0, 2], [3, 3, 3])).unwrap();
+        assert!(!b.is_solved());
+    }
+
+    #[test]
+    fn replace_swaps_a_box_unless_it_would_overlap() {
         let hidden = |cell| Clue {
             cell,
             volume: None,
@@ -229,20 +244,21 @@ mod tests {
         let mut b = Board::new(vec![hidden([0, 0, 0]), hidden([3, 3, 3])]);
         let small = BoxRegion::spanning([0, 0, 0], [1, 0, 0]);
         let bigger = BoxRegion::spanning([0, 0, 0], [1, 1, 0]);
+        let other = BoxRegion::spanning([3, 3, 3], [3, 3, 3]);
         b.place(small).unwrap();
+        b.place(other).unwrap();
         assert_eq!(b.replace(small, bigger), Ok(()));
-        assert_eq!(b.boxes(), &[bigger]);
-        let two_clues = BoxRegion::spanning([0, 0, 0], [3, 3, 3]);
-        assert_eq!(b.replace(bigger, two_clues), Err(Rejection::ClueCount(2)));
-        assert_eq!(b.boxes(), &[bigger]);
+        assert_eq!(b.boxes(), &[other, bigger]);
+        let everything = BoxRegion::spanning([0, 0, 0], [3, 3, 3]);
+        assert_eq!(b.replace(bigger, everything), Err(Rejection::Overlap));
+        assert_eq!(b.boxes(), &[other, bigger]);
     }
 
     #[test]
-    fn clue_of_finds_the_clue_inside_each_box() {
-        let mut b = Board::new(slab_clues());
-        b.place(slab(2)).unwrap();
-        b.place(slab(0)).unwrap();
-        assert_eq!(b.clue_of(0), 2);
-        assert_eq!(b.clue_of(1), 0);
+    fn clue_of_finds_the_one_clue_inside() {
+        let b = Board::new(slab_clues());
+        assert_eq!(b.clue_of(&slab(2)), Some(2));
+        assert_eq!(b.clue_of(&BoxRegion::spanning([0, 0, 0], [0, 0, 1])), None);
+        assert_eq!(b.clue_of(&BoxRegion::spanning([1, 1, 1], [1, 1, 1])), None);
     }
 }

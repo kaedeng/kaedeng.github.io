@@ -28,8 +28,16 @@ export default function Home() {
               Pause on a cell mid-drag to keep it in the box, then drag on to
               grow the box another way.
             </li>
+            <li>
+              A box that breaks its clue shows as a red outline. Drag from it to
+              grow it into the right shape.
+            </li>
             <li>Click a box to remove it, or drag from it to extend it.</li>
             <li>Drag the space around the cube to turn it.</li>
+            <li>
+              Scroll or pinch to zoom. Zoom in far enough and the layer nearest
+              you peels away.
+            </li>
           </ul>
         </section>
         <section>

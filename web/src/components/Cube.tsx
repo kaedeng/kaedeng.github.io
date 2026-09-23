@@ -12,7 +12,9 @@ import { clueColor, clueText, type Puzzle } from "@/lib/puzzle";
 // Built by `pnpm wasm` into public/wasm and loaded at runtime, outside the bundler.
 type Wasm = typeof import("../../public/wasm/patches_wasm");
 type Game = InstanceType<Wasm["Game"]>;
-type Status = { boxes: number; solved: boolean };
+type Status = { boxes: number; wrong: number; solved: boolean };
+/** When the first press on a cell happened, and when the puzzle was solved. */
+type Clock = { start: number; end: number | null };
 
 const WASM_JS = "/wasm/patches_wasm.js";
 const WASM_BIN = "/wasm/patches_wasm_bg.wasm";
@@ -34,10 +36,22 @@ function placeLabels(game: Game, spans: (HTMLSpanElement | null)[]) {
   const points = game.labels();
   spans.forEach((span, i) => {
     if (!span) return;
-    span.style.display = "";
-    span.style.transform = `translate(-50%, -50%) translate(${points[2 * i]}px, ${points[2 * i + 1]}px)`;
+    const [x, y] = [points[2 * i], points[2 * i + 1]];
+    // NaN: the clue is in a peeled layer.
+    span.style.display = Number.isNaN(x) ? "none" : "";
+    span.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
   });
 }
+
+/** Solve time as m:ss. */
+function formatTime(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** Vivid versions of a few clue colours, for the solved message. */
+const SOLVED_GRADIENT =
+  "linear-gradient(90deg, #ff3030, #ffd630, #30ff7a, #30d0ff, #c030ff)";
 
 export function Cube({
   puzzle,
@@ -53,6 +67,15 @@ export function Cube({
   const lastRef = useRef(0);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [clock, setClock] = useState<Clock | null>(null);
+  const [now, setNow] = useState(0);
+
+  // Ticks the visible timer once a second while it runs.
+  useEffect(() => {
+    if (!clock || clock.end !== null) return;
+    const id = setInterval(() => setNow(performance.now()), 1000);
+    return () => clearInterval(id);
+  }, [clock]);
 
   // Draws on animation frames until the tweens settle; no frames while idle.
   const animate = useCallback((game: Game) => {
@@ -71,8 +94,16 @@ export function Cube({
   const refresh = useCallback(
     (game: Game, boardChanged: boolean) => {
       placeLabels(game, labelRefs.current);
-      if (boardChanged)
-        setStatus({ boxes: game.box_count(), solved: game.is_solved() });
+      if (boardChanged) {
+        const solved = game.is_solved();
+        setStatus({
+          boxes: game.box_count(),
+          wrong: game.wrong_count(),
+          solved,
+        });
+        const t = performance.now();
+        setClock((c) => (c && c.end === null && solved ? { ...c, end: t } : c));
+      }
       animate(game);
     },
     [animate],
@@ -100,8 +131,18 @@ export function Cube({
         console.error(e);
         setError(String(e));
       });
+    // Wheel and trackpad pinch (ctrl+wheel) zoom; at either end the page scrolls instead.
+    const onWheel = (e: WheelEvent) => {
+      const game = gameRef.current;
+      const speed = e.ctrlKey ? 0.01 : 0.0015;
+      if (!game || !game.zoom_by(-e.deltaY * speed)) return;
+      e.preventDefault();
+      refresh(game, false);
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       cancelled = true;
+      canvas.removeEventListener("wheel", onWheel);
       cancelAnimationFrame(rafRef.current);
       rafRef.current = 0;
       gameRef.current?.free();
@@ -109,6 +150,13 @@ export function Cube({
     };
   }, [puzzle, mode, refresh]);
 
+  const reset = () => {
+    const game = gameRef.current;
+    if (!game) return;
+    game.reset();
+    setClock(null);
+    refresh(game, true);
+  };
   const point = (e: PointerEvent<HTMLCanvasElement>) =>
     [e.nativeEvent.offsetX, e.nativeEvent.offsetY] as const;
 
@@ -122,7 +170,11 @@ export function Cube({
             const game = gameRef.current;
             if (!game) return;
             e.currentTarget.setPointerCapture(e.pointerId);
-            game.pointer_down(...point(e));
+            if (game.pointer_down(...point(e)) && !clock) {
+              const t = performance.now();
+              setClock({ start: t, end: null });
+              setNow(t);
+            }
             refresh(game, false);
           }}
           onPointerMove={(e) => {
@@ -173,26 +225,46 @@ export function Cube({
           </p>
         )}
       </div>
-      {mode === "play" && status && (
+      {mode === "play" && status && !status.solved && (
         <div className="mt-6 flex items-center justify-between gap-4">
-          <span
-            className={`text-sm ${status.solved ? "font-medium text-white" : "text-zinc-400"}`}
-          >
-            {status.solved
-              ? "Solved! Every cell is in exactly one box."
-              : `${status.boxes} of ${puzzle.clues.length} boxes placed`}
+          <span className="text-sm text-zinc-400">
+            {`${status.boxes} of ${puzzle.clues.length} boxes placed`}
+            {status.wrong > 0 && (
+              <span className="text-red-400"> · {status.wrong} wrong</span>
+            )}
           </span>
+          <div className="flex items-center gap-4">
+            <span className="font-mono text-sm text-zinc-400 tabular-nums">
+              {formatTime(clock ? Math.max(now, clock.start) - clock.start : 0)}
+            </span>
+            <button
+              type="button"
+              className="rounded-md border border-white/15 px-4 py-2 text-sm font-medium hover:bg-white/10"
+              onClick={() => reset()}
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+      )}
+      {mode === "play" && status?.solved && (
+        <div className="mt-8" role="status">
+          <p className="text-sm font-medium text-zinc-400">Solved</p>
+          <p
+            className="mt-2 bg-clip-text text-5xl font-semibold tracking-tighter text-transparent sm:text-6xl"
+            style={{ backgroundImage: SOLVED_GRADIENT }}
+          >
+            {clock?.end ? `in ${formatTime(clock.end - clock.start)}` : "Nice."}
+          </p>
+          <p className="mt-4 text-zinc-400">
+            Every cell is in exactly one box. A new puzzle arrives Monday.
+          </p>
           <button
             type="button"
-            className="rounded-md border border-white/15 px-4 py-2 text-sm font-medium hover:bg-white/10"
-            onClick={() => {
-              const game = gameRef.current;
-              if (!game) return;
-              game.reset();
-              refresh(game, true);
-            }}
+            className="mt-6 rounded-md bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200"
+            onClick={() => reset()}
           >
-            Reset
+            Play again
           </button>
         </div>
       )}

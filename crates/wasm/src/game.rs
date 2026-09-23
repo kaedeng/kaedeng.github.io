@@ -1,8 +1,8 @@
 //! The 3D board: a white wireframe of the 4x4x4 cube, rendered with three-d on WebGL2.
 //! Each clue is a marker in its box's shape. Placed boxes are solid blocks in their clue's
-//! colour that tween in and out. JavaScript
-//! owns the canvas events and forwards them, and calls `tick` + `render` on animation
-//! frames only while something moves.
+//! colour, or red outlines when they break a rule, and tween in and out. JavaScript owns
+//! the canvas events and forwards them, and calls `tick` + `render` on animation frames
+//! only while something moves.
 
 use std::sync::Arc;
 
@@ -13,18 +13,27 @@ use web_sys::HtmlCanvasElement;
 
 use crate::anim::Anim;
 use crate::geom::{
-    DOT_R, MARK_R, Pose, block_pose, cell_center, grid_lines, lattice_dots, marker_half,
+    DOT_R, MARK_R, Pose, WHOLE, block_pose, box_edges, cell_center, clip, grid_lines, lattice_dots,
+    marker_half, peeled,
 };
 use crate::input::{Input, Moved, Released, Target};
 use crate::pick::pick;
 
 /// Close enough to fill the view, far enough that the whole cube fits from every angle.
 const CAMERA_DISTANCE: f32 = 12.0;
+/// How much closer the camera gets at full zoom.
+const ZOOM_RANGE: f32 = 4.0;
+/// Zoomed in at least this far (0..1), the layer nearest the camera is peeled away.
+const PEEL_AT: f32 = 0.5;
+/// On solving, blocks move this much further from the centre, so the cube opens up.
+const SPREAD: f32 = 1.12;
 /// Opacity of the grid lines: faint hairlines you look through.
 const WIRE_ALPHA: u8 = 56;
 const ORBIT_SPEED: f32 = 0.006;
 /// Just short of straight up and straight down, so the camera can go all the way around.
 const PITCH_RANGE: (f32, f32) = (-1.5, 1.5);
+/// Outline of a box that breaks a rule, like Patches' red patch.
+const WRONG: Srgba = Srgba::new_opaque(0xef, 0x44, 0x44);
 
 /// Same colours as `PALETTE` in web/src/lib/puzzle.ts so the 3D view matches the layer grids.
 const PALETTE: [Srgba; 16] = [
@@ -49,13 +58,15 @@ const PALETTE: [Srgba; 16] = [
 struct Block {
     region: BoxRegion,
     color: Srgba,
+    /// Breaks a rule: drawn as a red outline instead of a solid block.
+    wrong: bool,
     anim: Anim,
     removing: bool,
 }
 
 impl Block {
     /// Grows out of its own centre.
-    fn spawn(region: BoxRegion, color: Srgba) -> Self {
+    fn spawn(region: BoxRegion, color: Srgba, wrong: bool) -> Self {
         let to = block_pose(&region);
         let from = Pose {
             center: to.center,
@@ -64,9 +75,20 @@ impl Block {
         Self {
             region,
             color,
+            wrong,
             anim: Anim::new(from, to),
             removing: false,
         }
+    }
+
+    /// Brightens and eases outward: the solved cube opening up.
+    fn celebrate(&mut self) {
+        self.color = vivid(self.color);
+        let p = block_pose(&self.region);
+        self.anim.retarget(Pose {
+            center: p.center.map(|c| c * SPREAD),
+            ..p
+        });
     }
 
     /// Shrinks away; `tick` drops the block once it has vanished.
@@ -86,12 +108,17 @@ pub struct Game {
     camera: Camera,
     yaw: f32,
     pitch: f32,
+    /// 0 (whole cube in view) to 1 (closest, nearest layer peeled).
+    zoom: f32,
+    /// The cells drawn and pickable: the whole cube, or the cube without a peeled layer.
+    shown: BoxRegion,
     wires: Gm<InstancedMesh, ColorMaterial>,
     /// White lattice dots plus a round marker per any-shape clue.
     dots: Gm<InstancedMesh, ColorMaterial>,
     /// A small cuboid in the clue's shape per shaped clue. A block hides its own clue's marker.
     markers: Gm<InstancedMesh, PhysicalMaterial>,
     blocks_mesh: Gm<InstancedMesh, PhysicalMaterial>,
+    outlines: Gm<InstancedMesh, ColorMaterial>,
     blocks: Vec<Block>,
     preview: Gm<Mesh, ColorMaterial>,
     preview_on: bool,
@@ -103,7 +130,10 @@ pub struct Game {
     puzzle: Puzzle,
     board: Board,
     input: Input,
-    interactive: bool,
+    /// False on the answer page.
+    playable: bool,
+    /// Set when the player solves the puzzle; the board then locks until Reset.
+    solved: bool,
 }
 
 #[wasm_bindgen]
@@ -129,18 +159,27 @@ impl Game {
             100.0,
         );
         let cube = CpuMesh::cube();
-        let lines = grid_lines();
+        let lines = grid_lines(&WHOLE);
+        let (dot_poses, dot_colors) = dot_instances(&puzzle, &WHOLE);
+        let (marker_poses, marker_colors) = marker_instances(&puzzle, &WHOLE);
         let mut game = Game {
             wires: Gm::new(
                 instanced(&context, &cube, &lines, vec![Srgba::WHITE; lines.len()]),
                 see_through(&context, WIRE_ALPHA),
             ),
-            dots: Gm::new(dots_mesh(&context, &puzzle), unlit(&context)),
-            markers: markers_mesh(&context, &puzzle),
+            dots: Gm::new(
+                instanced(&context, &CpuMesh::sphere(12), &dot_poses, dot_colors),
+                unlit(&context),
+            ),
+            markers: Gm::new(
+                instanced(&context, &cube, &marker_poses, marker_colors),
+                block_material(&context),
+            ),
             blocks_mesh: Gm::new(
                 instanced(&context, &cube, &[], Vec::new()),
                 block_material(&context),
             ),
+            outlines: Gm::new(instanced(&context, &cube, &[], Vec::new()), unlit(&context)),
             blocks: Vec::new(),
             preview: translucent(&context, 90),
             preview_on: false,
@@ -154,15 +193,18 @@ impl Game {
             // Off the cube's diagonal, so no two cell centres line up on screen.
             yaw: 0.65,
             pitch: 0.4,
+            zoom: 0.0,
+            shown: WHOLE,
             context,
             puzzle,
             input: Input::default(),
-            interactive: !answer,
+            playable: !answer,
+            solved: false,
         };
         game.update_camera();
         if answer {
             for b in game.puzzle.solution.clone() {
-                if !game.place(b) {
+                if !game.place(b) || game.board.fault(&b).is_some() {
                     return Err("stored solution breaks the rules".into());
                 }
             }
@@ -173,8 +215,13 @@ impl Game {
     pub fn render(&mut self) {
         let (w, h) = (self.canvas.width(), self.canvas.height());
         self.camera.set_viewport(Viewport::new_at_origo(w, h));
-        let mut objects: Vec<&dyn Object> =
-            vec![&self.wires, &self.dots, &self.markers, &self.blocks_mesh];
+        let mut objects: Vec<&dyn Object> = vec![
+            &self.wires,
+            &self.dots,
+            &self.markers,
+            &self.blocks_mesh,
+            &self.outlines,
+        ];
         if self.preview_on {
             objects.push(&self.preview);
         }
@@ -198,7 +245,8 @@ impl Game {
         moving
     }
 
-    /// Screen position (CSS px, top-left origin) of every clue's top face, flattened as `[x0, y0, x1, y1, ...]`.
+    /// Screen position (CSS px, top-left origin) of every clue's top face, flattened as
+    /// `[x0, y0, x1, y1, ...]`; NaN for a clue in a peeled layer.
     pub fn labels(&self) -> Vec<f32> {
         let s = self.scale();
         let h = self.canvas.height() as f32;
@@ -206,6 +254,9 @@ impl Game {
             .clues
             .iter()
             .flat_map(|c| {
+                if !self.shown.contains(c.cell) {
+                    return [f32::NAN; 2];
+                }
                 let top = Vec3::from(cell_center(c.cell)) + vec3(0.0, 0.5, 0.0);
                 let p = self.camera.pixel_at_position(top);
                 [p.x / s, (h - p.y) / s]
@@ -213,10 +264,12 @@ impl Game {
             .collect()
     }
 
-    pub fn pointer_down(&mut self, x: f32, y: f32) {
+    /// Returns true when the press landed on a cell.
+    pub fn pointer_down(&mut self, x: f32, y: f32) -> bool {
         let target = self.target(x, y);
         self.input.down((x, y), target);
         self.set_hover(None);
+        target != Target::Nothing
     }
 
     /// `t` is the event's timestamp in ms. Returns true when the scene needs a redraw.
@@ -247,17 +300,33 @@ impl Game {
 
     /// Returns true when the board changed.
     pub fn pointer_up(&mut self, x: f32, y: f32) -> bool {
-        // A box that breaks the rules is simply not built.
+        // A box that would overlap another is not built; one that breaks a rule is built
+        // and shows as a red outline.
         let changed = match self.input.up(self.pick_cell(x, y)) {
             Released::Place(r) => self.place(r),
             Released::Remove(r) => self.remove(r.min),
             Released::Replace { old, new } => self.extend(old, new),
             Released::Nothing => false,
         };
+        if changed && self.playable && self.board.is_solved() {
+            self.celebrate();
+        }
         // The first corner of a click-click box shows as a one-cell preview.
         self.set_preview(self.input.pending().map(|c| BoxRegion::spanning(c, c)));
         self.set_hover(self.pick_cell(x, y));
         changed
+    }
+
+    /// Zooms by `delta` (the full range is 1). Returns false at either end, so the page
+    /// can scroll instead.
+    pub fn zoom_by(&mut self, delta: f32) -> bool {
+        let zoom = (self.zoom + delta).clamp(0.0, 1.0);
+        if zoom == self.zoom {
+            return false;
+        }
+        self.zoom = zoom;
+        self.update_camera();
+        true
     }
 
     pub fn pointer_cancel(&mut self) {
@@ -276,8 +345,20 @@ impl Game {
         self.hover.is_some()
     }
 
+    /// Placed boxes that keep every rule.
     pub fn box_count(&self) -> u32 {
-        self.board.boxes().len() as u32
+        self.blocks
+            .iter()
+            .filter(|b| !b.removing && !b.wrong)
+            .count() as u32
+    }
+
+    /// Placed boxes that break a rule.
+    pub fn wrong_count(&self) -> u32 {
+        self.blocks
+            .iter()
+            .filter(|b| !b.removing && b.wrong)
+            .count() as u32
     }
 
     pub fn is_solved(&self) -> bool {
@@ -285,7 +366,8 @@ impl Game {
     }
 
     pub fn reset(&mut self) {
-        if self.interactive {
+        if self.playable {
+            self.solved = false;
             self.board.clear();
             self.input.cancel();
             self.set_preview(None);
@@ -297,14 +379,30 @@ impl Game {
 }
 
 impl Game {
+    fn celebrate(&mut self) {
+        self.solved = true;
+        self.input.cancel();
+        for b in self.blocks.iter_mut().filter(|b| !b.removing) {
+            b.celebrate();
+        }
+    }
+
     fn place(&mut self, r: BoxRegion) -> bool {
         if self.board.place(r).is_err() {
             return false;
         }
-        let clue = self.board.clue_of(self.board.boxes().len() - 1);
-        self.blocks
-            .push(Block::spawn(r, PALETTE[clue % PALETTE.len()]));
+        let (color, wrong) = self.look(&r);
+        self.blocks.push(Block::spawn(r, color, wrong));
         true
+    }
+
+    /// The clue's colour, and whether the box breaks a rule.
+    fn look(&self, r: &BoxRegion) -> (Srgba, bool) {
+        let color = self
+            .board
+            .clue_of(r)
+            .map_or(WRONG, |c| PALETTE[c % PALETTE.len()]);
+        (color, self.board.fault(r).is_some())
     }
 
     /// Returns true when a box was removed.
@@ -319,32 +417,42 @@ impl Game {
         self.board.remove_at(cell)
     }
 
-    /// Grows box `old` into `new` if the rules allow it; the block tweens to its new size.
+    /// Grows box `old` into `new` unless that would overlap another box; the block tweens to
+    /// its new size.
     fn extend(&mut self, old: BoxRegion, new: BoxRegion) -> bool {
         if new == old || self.board.replace(old, new).is_err() {
             return false;
         }
+        let (color, wrong) = self.look(&new);
         if let Some(b) = self
             .blocks
             .iter_mut()
             .find(|b| !b.removing && b.region == old)
         {
             b.region = new;
+            (b.color, b.wrong) = (color, wrong);
             b.anim.retarget(block_pose(&new));
         }
         true
     }
 
     fn sync_blocks(&mut self) {
-        self.blocks_mesh.set_instances(&Instances {
-            transformations: self
-                .blocks
-                .iter()
-                .map(|b| transform(&b.anim.pose()))
-                .collect(),
-            colors: Some(self.blocks.iter().map(|b| b.color).collect()),
-            ..Default::default()
-        });
+        let (wrong, solid): (Vec<&Block>, Vec<&Block>) = self.blocks.iter().partition(|b| b.wrong);
+        let (mut poses, mut colors) = (Vec::new(), Vec::new());
+        for b in solid {
+            if let Some(p) = clip(&b.anim.pose(), &self.shown) {
+                poses.push(p);
+                colors.push(b.color);
+            }
+        }
+        self.blocks_mesh.set_instances(&instances(&poses, colors));
+        let edges: Vec<Pose> = wrong
+            .iter()
+            .filter_map(|b| clip(&b.anim.pose(), &self.shown))
+            .flat_map(|p| box_edges(&p))
+            .collect();
+        self.outlines
+            .set_instances(&instances(&edges, vec![WRONG; edges.len()]));
         // With nothing to cast, generate_shadow_map keeps the old map, so clear it first.
         self.sun.clear_shadow_map();
         self.sun
@@ -353,14 +461,18 @@ impl Game {
     }
 
     fn set_preview(&mut self, r: Option<BoxRegion>) {
-        self.preview_on = r.is_some();
-        if let Some(r) = r {
-            // A hair bigger than the block, so it never z-fights the block it extends.
+        // A hair bigger than the block, so it never z-fights the block it extends.
+        let pose = r.and_then(|r| {
             let p = block_pose(&r);
-            self.preview.set_transformation(transform(&Pose {
+            let padded = Pose {
                 half: p.half.map(|h| h + 0.02),
                 ..p
-            }));
+            };
+            clip(&padded, &self.shown)
+        });
+        self.preview_on = pose.is_some();
+        if let Some(p) = pose {
+            self.preview.set_transformation(transform(&p));
         }
     }
 
@@ -392,13 +504,13 @@ impl Game {
         }
     }
 
-    /// The cell under the pointer (CSS px); none on the answer page.
+    /// The cell under the pointer (CSS px); none on the answer page or once solved.
     fn pick_cell(&self, x: f32, y: f32) -> Option<Cell> {
-        if !self.interactive {
+        if !self.playable || self.solved {
             return None;
         }
         let (origin, dir) = self.ray(x, y);
-        pick(origin, dir, self.board.boxes())
+        pick(origin, dir, self.board.boxes(), &self.shown)
     }
 
     /// The camera ray through a point on the canvas (CSS px).
@@ -419,9 +531,30 @@ impl Game {
     fn update_camera(&mut self) {
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
-        let position = vec3(cp * sy, sp, cp * cy) * CAMERA_DISTANCE;
+        let eye = vec3(cp * sy, sp, cp * cy) * (CAMERA_DISTANCE - self.zoom * ZOOM_RANGE);
         self.camera
-            .set_view(position, vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));
+            .set_view(eye, vec3(0.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));
+        let shown = if self.zoom >= PEEL_AT {
+            peeled(eye.into())
+        } else {
+            WHOLE
+        };
+        if shown != self.shown {
+            self.shown = shown;
+            self.show_scenery();
+            self.sync_blocks();
+        }
+    }
+
+    /// Redraws the lattice and clue markers for the shown cells.
+    fn show_scenery(&mut self) {
+        let lines = grid_lines(&self.shown);
+        self.wires
+            .set_instances(&instances(&lines, vec![Srgba::WHITE; lines.len()]));
+        let (poses, colors) = dot_instances(&self.puzzle, &self.shown);
+        self.dots.set_instances(&instances(&poses, colors));
+        let (poses, colors) = marker_instances(&self.puzzle, &self.shown);
+        self.markers.set_instances(&instances(&poses, colors));
     }
 }
 
@@ -448,15 +581,15 @@ fn instanced(
     poses: &[Pose],
     colors: Vec<Srgba>,
 ) -> InstancedMesh {
-    InstancedMesh::new(
-        context,
-        &Instances {
-            transformations: poses.iter().map(transform).collect(),
-            colors: Some(colors),
-            ..Default::default()
-        },
-        shape,
-    )
+    InstancedMesh::new(context, &instances(poses, colors), shape)
+}
+
+fn instances(poses: &[Pose], colors: Vec<Srgba>) -> Instances {
+    Instances {
+        transformations: poses.iter().map(transform).collect(),
+        colors: Some(colors),
+        ..Default::default()
+    }
 }
 
 /// Flat colour, multiplied by each instance's colour.
@@ -470,9 +603,9 @@ fn unlit(context: &Context) -> ColorMaterial {
     )
 }
 
-/// White lattice dots, plus a round marker for each clue that allows any shape.
-fn dots_mesh(context: &Context, puzzle: &Puzzle) -> InstancedMesh {
-    let mut poses: Vec<Pose> = lattice_dots()
+/// White lattice dots, plus a round marker for each shown clue that allows any shape.
+fn dot_instances(puzzle: &Puzzle, shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba>) {
+    let mut poses: Vec<Pose> = lattice_dots(shown)
         .into_iter()
         .map(|center| Pose {
             center,
@@ -481,7 +614,7 @@ fn dots_mesh(context: &Context, puzzle: &Puzzle) -> InstancedMesh {
         .collect();
     let mut colors = vec![Srgba::WHITE; poses.len()];
     for (i, clue) in puzzle.clues.iter().enumerate() {
-        if clue.shape.is_none() {
+        if clue.shape.is_none() && shown.contains(clue.cell) {
             poses.push(Pose {
                 center: cell_center(clue.cell),
                 half: [MARK_R; 3],
@@ -489,14 +622,16 @@ fn dots_mesh(context: &Context, puzzle: &Puzzle) -> InstancedMesh {
             colors.push(PALETTE[i % PALETTE.len()]);
         }
     }
-    instanced(context, &CpuMesh::sphere(12), &poses, colors)
+    (poses, colors)
 }
 
-/// A small lit cuboid in its box's shape for each clue that names one.
-fn markers_mesh(context: &Context, puzzle: &Puzzle) -> Gm<InstancedMesh, PhysicalMaterial> {
+/// A small cuboid in its box's shape for each shown clue that names one.
+fn marker_instances(puzzle: &Puzzle, shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba>) {
     let (mut poses, mut colors) = (Vec::new(), Vec::new());
     for (i, clue) in puzzle.clues.iter().enumerate() {
-        if let Some(shape) = clue.shape {
+        if let Some(shape) = clue.shape
+            && shown.contains(clue.cell)
+        {
             poses.push(Pose {
                 center: cell_center(clue.cell),
                 half: marker_half(shape),
@@ -504,10 +639,13 @@ fn markers_mesh(context: &Context, puzzle: &Puzzle) -> Gm<InstancedMesh, Physica
             colors.push(PALETTE[i % PALETTE.len()]);
         }
     }
-    Gm::new(
-        instanced(context, &CpuMesh::cube(), &poses, colors),
-        block_material(context),
-    )
+    (poses, colors)
+}
+
+/// A saturated version of a pastel from `PALETTE`: 0xb1 channels go deep, 0xf1 stay bright.
+fn vivid(c: Srgba) -> Srgba {
+    let f = |v: u8| ((f32::from(v) - 177.0) / 64.0 * 207.0 + 48.0).clamp(0.0, 255.0) as u8;
+    Srgba::new_opaque(f(c.r), f(c.g), f(c.b))
 }
 
 /// White, lit, and tinted per instance by the clue colour.
