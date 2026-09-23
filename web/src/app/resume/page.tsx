@@ -212,7 +212,7 @@ export default function Resume() {
   return (
     <ResumeGate>
       <h1 className="text-4xl font-semibold tracking-tighter sm:text-6xl">
-        Kaelem Deng
+        Kaelem Deng (she/they)
       </h1>
       <p className="mt-6 max-w-prose text-xl text-zinc-400">
         Software engineer and computer science master&apos;s student at Colorado
