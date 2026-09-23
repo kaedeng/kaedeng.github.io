@@ -5,8 +5,11 @@ use patches_core::{BoxRegion, Cell};
 
 /// Pointer travel (CSS px) below which a press counts as a click, not a drag.
 pub const CLICK_SLOP: f32 = 5.0;
-/// How long (ms) a drag must rest on a cell for the box to keep reaching it after the
-/// pointer moves on. Cells only passed on the way are not kept.
+/// How far (CSS px) the pointer can wobble and still be resting.
+pub const REST_SLOP: f32 = 5.0;
+/// How long (ms) a drag must rest, staying within `REST_SLOP`, for the box to keep reaching
+/// the cell under it after the pointer moves on. Cells only passed on the way are not kept,
+/// however slowly the pointer crossed them.
 pub const DWELL_MS: f64 = 400.0;
 
 /// What a press landed on.
@@ -54,14 +57,39 @@ enum Mode {
     },
 }
 
+/// Where a drag last came to a stop.
+struct Rest {
+    at: (f32, f32),
+    since: f64,
+    /// The cell under the pointer there; `None` off the cube.
+    cell: Option<Cell>,
+}
+
+impl Rest {
+    /// Follows the pointer. Returns the cell it rested on when it leaves a rest that lasted
+    /// `DWELL_MS`.
+    fn follow(&mut self, at: (f32, f32), cell: Option<Cell>, now: f64) -> Option<Cell> {
+        if (at.0 - self.at.0).hypot(at.1 - self.at.1) < REST_SLOP {
+            self.cell = cell;
+            return None;
+        }
+        let rested = self.cell.filter(|_| now - self.since >= DWELL_MS);
+        *self = Rest {
+            at,
+            since: now,
+            cell,
+        };
+        rested
+    }
+}
+
 struct Press {
     start: (f32, f32),
     last: (f32, f32),
     moved: bool,
     mode: Mode,
     hover: Option<Cell>,
-    /// When the pointer reached `hover`.
-    hover_since: f64,
+    rest: Rest,
 }
 
 #[derive(Default)]
@@ -90,7 +118,12 @@ impl Input {
             moved: false,
             mode,
             hover: None,
-            hover_since: 0.0,
+            // Resting where it was pressed never counts: that cell is in the box already.
+            rest: Rest {
+                at,
+                since: f64::INFINITY,
+                cell: None,
+            },
         });
     }
 
@@ -113,18 +146,17 @@ impl Input {
         let (dx, dy) = (at.0 - p.last.0, at.1 - p.last.1);
         p.last = at;
         p.moved |= (at.0 - p.start.0).hypot(at.1 - p.start.1) >= CLICK_SLOP;
-        match (&mut p.mode, hover) {
-            (Mode::Orbit, _) if p.moved => Moved::Orbit { dx, dy },
-            (Mode::Build { extent, .. } | Mode::Extend { extent, .. }, Some(h))
-                if p.hover != Some(h) =>
-            {
-                if let Some(rested) = p.hover
-                    && now - p.hover_since >= DWELL_MS
-                {
-                    *extent = extent.including(rested);
-                }
+        let extent = match &mut p.mode {
+            Mode::Orbit if p.moved => return Moved::Orbit { dx, dy },
+            Mode::Orbit => return Moved::Nothing,
+            Mode::Build { extent, .. } | Mode::Extend { extent, .. } => extent,
+        };
+        if let Some(rested) = p.rest.follow(at, hover, now) {
+            *extent = extent.including(rested);
+        }
+        match hover {
+            Some(h) if p.hover != Some(h) => {
                 p.hover = Some(h);
-                p.hover_since = now;
                 Moved::Preview(extent.including(h))
             }
             _ => Moved::Nothing,
@@ -291,6 +323,65 @@ mod tests {
         assert_eq!(
             input.up(Some(B)),
             Released::Place(BoxRegion::spanning(A, B))
+        );
+    }
+
+    #[test]
+    fn drag_forgets_a_cell_it_crossed_slowly() {
+        let mut input = Input::default();
+        input.down((0.0, 0.0), Target::Empty(A));
+        // Still moving, just slowly: 600 ms over one cell is not a rest.
+        for i in 1..=7 {
+            input.moved(
+                (10.0 * i as f32, 0.0),
+                Some([3, 0, 0]),
+                100.0 * (i - 1) as f64,
+            );
+        }
+        input.moved((100.0, 0.0), Some(B), 650.0);
+        assert_eq!(
+            input.up(Some(B)),
+            Released::Place(BoxRegion::spanning(A, B))
+        );
+    }
+
+    #[test]
+    fn time_off_the_cube_is_not_a_rest_on_the_last_cell() {
+        let mut input = Input::default();
+        input.down((0.0, 0.0), Target::Empty(A));
+        input.moved((20.0, 0.0), Some([3, 0, 0]), 0.0);
+        input.moved((300.0, 0.0), None, 50.0);
+        input.moved((310.0, 0.0), None, 1000.0);
+        input.moved((40.0, 40.0), Some(B), 1050.0);
+        assert_eq!(
+            input.up(Some(B)),
+            Released::Place(BoxRegion::spanning(A, B))
+        );
+    }
+
+    #[test]
+    fn jitter_at_the_press_does_not_keep_a_neighbouring_cell() {
+        let mut input = Input::default();
+        input.down((0.0, 0.0), Target::Empty(A));
+        input.moved((2.0, 0.0), Some([0, 0, 1]), 1000.0);
+        input.moved((40.0, 40.0), Some(B), 1100.0);
+        assert_eq!(
+            input.up(Some(B)),
+            Released::Place(BoxRegion::spanning(A, B))
+        );
+    }
+
+    #[test]
+    fn a_rest_survives_hand_jitter() {
+        let mut input = Input::default();
+        input.down((0.0, 0.0), Target::Empty(A));
+        input.moved((20.0, 0.0), Some([3, 0, 0]), 0.0);
+        input.moved((21.0, 1.0), Some([3, 0, 0]), 200.0);
+        input.moved((20.0, 2.0), Some([3, 0, 0]), 350.0);
+        input.moved((40.0, 40.0), Some(B), DWELL_MS + 50.0);
+        assert_eq!(
+            input.up(Some(B)),
+            Released::Place(BoxRegion::spanning(A, [3, 2, 0]))
         );
     }
 
