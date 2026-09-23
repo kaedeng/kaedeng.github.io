@@ -1,5 +1,11 @@
 import init, { Game, generate } from "../wasm/patches_wasm.js";
-import { clueColors, clueText, type Puzzle } from "./puzzle.js";
+import {
+  clueColors,
+  clueText,
+  type Box,
+  type Cell,
+  type Puzzle,
+} from "./puzzle.js";
 
 export * from "./puzzle.js";
 
@@ -22,7 +28,29 @@ export type Board = {
   reset(): void;
   /** Stops listening, removes the overlay and frees the board. */
   destroy(): void;
+  /**
+   * Feeds a pointer event to the same handlers as the canvas's own listeners, e.g. for a
+   * demo: `x`, `y` in CSS px from the canvas's top-left, `time` in ms like `timeStamp`.
+   */
+  pointer(type: PointerType, x: number, y: number, time: number): void;
+  /** Where `cell`'s centre is on the canvas, in CSS px; null while its layer is hidden. */
+  cellPoint(cell: Cell): [number, number] | null;
+  /** The view-cube face turned most toward the viewer, e.g. for a demo to click. */
+  nearestFace(): HTMLButtonElement;
+  /** The placed boxes. */
+  boxes(): Box[];
+  /** Puts the placed boxes back to `boxes`, e.g. after a demo, and calls `onStatus`. */
+  setBoxes(boxes: Box[]): void;
 };
+
+/** The pointer events `Board.pointer` takes, after `pointerdown` and so on. */
+export type PointerType = "down" | "move" | "up" | "leave" | "cancel";
+
+/** What the canvas's pointer listeners do with a pointer at `x`, `y` at `time`. */
+type Pointer = Record<
+  PointerType,
+  (x: number, y: number, time: number) => void
+>;
 
 type Overlay = {
   root: HTMLDivElement;
@@ -121,8 +149,9 @@ export async function mountBoard(
     animate();
   };
 
+  const pointer = pointerHandlers(canvas, game, refresh, options);
   const listeners = Object.entries(
-    inputListeners(canvas, game, overlay, refresh, options),
+    inputListeners(canvas, game, overlay, refresh, options, pointer),
   ) as [string, EventListener][];
   for (const [type, fn] of listeners) {
     // Not passive, so a zooming wheel can stop the page from scrolling.
@@ -158,6 +187,64 @@ export async function mountBoard(
       canvas.style.cursor = "";
       game.free();
     },
+    pointer(type, x, y, time) {
+      pointer[type](x, y, time);
+    },
+    cellPoint(cell) {
+      const [x, y] = game.cell_point(...cell);
+      return Number.isNaN(x) ? null : [x, y];
+    },
+    nearestFace() {
+      const [axis, sign] = game.facing();
+      return overlay.faces[
+        FACES.findIndex(([, a, s]) => a === axis && s === sign)
+      ];
+    },
+    boxes() {
+      const flat = [...game.boxes()];
+      return Array.from({ length: flat.length / 6 }, (_, i) => {
+        const [x0, y0, z0, x1, y1, z1] = flat.slice(6 * i, 6 * i + 6);
+        return { min: [x0, y0, z0], max: [x1, y1, z1] };
+      });
+    },
+    setBoxes(boxes) {
+      game.set_boxes(
+        new Uint8Array(boxes.flatMap((b) => [...b.min, ...b.max])),
+      );
+      refresh(true);
+    },
+  };
+}
+
+function pointerHandlers(
+  canvas: HTMLCanvasElement,
+  game: Game,
+  refresh: (boardChanged: boolean) => void,
+  options: BoardOptions,
+): Pointer {
+  const showHover = () => {
+    canvas.style.cursor = game.hovering() ? "pointer" : "";
+  };
+  return {
+    down: (x, y) => {
+      if (game.pointer_down(x, y)) options.onPlay?.();
+      refresh(false);
+    },
+    move: (x, y, time) => {
+      if (game.pointer_move(x, y, time)) refresh(false);
+      showHover();
+    },
+    up: (x, y) => {
+      refresh(game.pointer_up(x, y));
+      showHover();
+    },
+    leave: () => {
+      if (game.pointer_leave()) refresh(false);
+    },
+    cancel: () => {
+      game.pointer_cancel();
+      refresh(false);
+    },
   };
 }
 
@@ -167,11 +254,10 @@ function inputListeners(
   overlay: Overlay,
   refresh: (boardChanged: boolean) => void,
   options: BoardOptions,
+  pointer: Pointer,
 ): Listeners {
-  const point = (e: PointerEvent) => [e.offsetX, e.offsetY] as const;
-  const showHover = () => {
-    canvas.style.cursor = game.hovering() ? "pointer" : "";
-  };
+  const point = (e: PointerEvent) =>
+    [e.offsetX, e.offsetY, e.timeStamp] as const;
   return {
     // Wheel and trackpad pinch (ctrl+wheel) zoom; at either end the page scrolls instead.
     wheel: (e) => {
@@ -198,24 +284,12 @@ function inputListeners(
     },
     pointerdown: (e) => {
       canvas.setPointerCapture(e.pointerId);
-      if (game.pointer_down(...point(e))) options.onPlay?.();
-      refresh(false);
+      pointer.down(...point(e));
     },
-    pointermove: (e) => {
-      if (game.pointer_move(...point(e), e.timeStamp)) refresh(false);
-      showHover();
-    },
-    pointerup: (e) => {
-      refresh(game.pointer_up(...point(e)));
-      showHover();
-    },
-    pointerleave: () => {
-      if (game.pointer_leave()) refresh(false);
-    },
-    pointercancel: () => {
-      game.pointer_cancel();
-      refresh(false);
-    },
+    pointermove: (e) => pointer.move(...point(e)),
+    pointerup: (e) => pointer.up(...point(e)),
+    pointerleave: (e) => pointer.leave(...point(e)),
+    pointercancel: (e) => pointer.cancel(...point(e)),
   };
 }
 

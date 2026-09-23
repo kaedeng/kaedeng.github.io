@@ -8,9 +8,12 @@ import {
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type SyntheticEvent,
 } from "react";
 import { mountBoard, type Board, type Puzzle, type Shape } from "patches-board";
 import { ShapeIcon } from "@/components/ShapeIcon";
+import { canDemo, demoScript } from "@/lib/demo";
+import { playDemo } from "@/lib/ghost";
 import { SHAPE_NAME } from "@/lib/puzzle";
 import { reached, type BoardEvent, type Goal } from "@/lib/tutorial";
 import data from "@/tutorial.json";
@@ -21,35 +24,43 @@ const PRACTICE = data as Puzzle;
 const SEEN = "patches-tutorial-seen";
 /** Pause after a step's goal is met, so the player sees what they did. */
 const ADVANCE_MS = 700;
+/** How long the "Your turn" line stays lit after a demo. */
+const NUDGE_MS = 1600;
 
-type Step = { title: string; body: ReactNode; goal?: Goal };
+/** `turn` is what the player does on the practice board to meet `goal`. */
+type Step = { title: string; body: ReactNode; turn?: string; goal?: Goal };
 
 const STEPS: Step[] = [
   {
     title: "Build a box",
     goal: "place",
-    body: "Drag from one corner of the top layer to the opposite corner. That builds the box between them.",
+    body: "Dragging from one cell to another builds the box between them.",
+    turn: "drag from one corner of the top layer to the opposite corner.",
   },
   {
     title: "Remove it",
     goal: "remove",
-    body: "Click the box to remove it. Dragging from a box grows it instead.",
+    body: "Dragging from a box grows it instead of removing it.",
+    turn: "click a box to remove it.",
   },
   {
     title: "Turn the cube",
     goal: "turn",
-    body: "Drag the space around the cube. Scroll or pinch to zoom; zoom in far enough and the nearest layer peels away.",
+    body: "Scroll or pinch to zoom; zoom in far enough and the nearest layer peels away.",
+    turn: "drag the empty space around the cube.",
   },
   {
     title: "See one layer flat",
     goal: "flat",
-    body: "Click a face of the small cube in the corner. ‹ › or Shift+↑/↓ change layer; click the cube again to go back to 3D.",
+    body: "In 2D, ‹ › or Shift+↑/↓ change layer; click the cube again to go back to 3D.",
+    turn: "click a face of the small cube in the corner.",
   },
   { title: "Read the clues", body: <Clues /> },
   {
     title: "Solve it",
     goal: "solve",
-    body: "Fill the cube so every box holds one clue. A box that breaks its clue shows as a red outline; drag from it to fix it.",
+    body: "A box that breaks its clue shows as a red outline; drag from it to fix it.",
+    turn: "fill the practice cube so every box holds exactly one clue.",
   },
   { title: "More ways to play", body: <Tips /> },
 ];
@@ -95,8 +106,15 @@ export function Tutorial() {
   const [step, setStep] = useState(0);
   const [done, setDone] = useState(false);
   const boxes = useRef(0);
+  const board = useRef<Board | null>(null);
+  const ghost = useRef<HTMLDivElement>(null);
+  // Set while a demo plays: stops it.
+  const stopDemo = useRef<(() => void) | null>(null);
+  const [playing, setPlaying] = useState(false);
+  // The step whose "Your turn" line is lit after its demo.
+  const [nudged, setNudged] = useState<number | null>(null);
   const open = firstVisit || reopened;
-  const { title, body, goal } = STEPS[step];
+  const { title, body, turn, goal } = STEPS[step];
   const last = step === STEPS.length - 1;
 
   // A layout effect, so the dialog is showing before the practice board mounts in its
@@ -115,13 +133,47 @@ export function Tutorial() {
     return () => clearTimeout(id);
   }, [done, step]);
 
+  useEffect(() => {
+    if (nudged === null) return;
+    const id = setTimeout(() => setNudged(null), NUDGE_MS);
+    return () => clearTimeout(id);
+  }, [nudged]);
+
   const go = (to: number) => {
+    stopDemo.current?.();
     setStep(to);
     setDone(false);
   };
   const onEvent = (e: BoardEvent) => {
-    if (goal && !done && reached(goal, e, boxes.current)) setDone(true);
+    // What a demo does on the board is not the player's move.
+    if (goal && !done && !stopDemo.current && reached(goal, e, boxes.current)) {
+      setDone(true);
+    }
     if ("boxes" in e) boxes.current = e.boxes;
+  };
+  // Pressed again while the demo plays, it stops it.
+  const showMe = () => {
+    if (stopDemo.current) return stopDemo.current();
+    if (!canDemo(goal) || !board.current || !ghost.current) return;
+    const script = demoScript(goal, board.current.boxes());
+    setPlaying(true);
+    setNudged(null);
+    stopDemo.current = playDemo(board.current, ghost.current, script, (end) => {
+      stopDemo.current = null;
+      setPlaying(false);
+      if (end) setNudged(step);
+    });
+  };
+  // A real press, key or wheel on the board stops a demo before the board acts on it.
+  // The player's pointer moves wait instead, so they never steer the demo's drag.
+  const onInput = (e: SyntheticEvent) => {
+    if (!stopDemo.current || !e.isTrusted) return;
+    if (e.type === "pointermove") e.stopPropagation();
+    else stopDemo.current();
+  };
+  const onReady = (b: Board | null) => {
+    if (!b) stopDemo.current?.();
+    board.current = b;
   };
   // Esc, the close button and the last step all end up here.
   const onClose = () => {
@@ -161,12 +213,44 @@ export function Tutorial() {
                 ✕
               </button>
             </div>
-            <PracticeBoard onEvent={onEvent} />
-            <h2 className="mt-4 font-semibold">
-              {title}
-              {done && <span className="text-zinc-400"> ✓</span>}
-            </h2>
+            <PracticeBoard
+              onEvent={onEvent}
+              onReady={onReady}
+              onInput={onInput}
+            >
+              {/* The demo's pointer: a dot that shrinks and fills while pressed. */}
+              <div
+                ref={ghost}
+                aria-hidden
+                className="pointer-events-none absolute top-0 left-0 size-6 -translate-1/2 rounded-full border-2 border-white bg-white/20 opacity-0 shadow-[0_0_0_3px_rgba(0,0,0,0.5)] data-down:scale-75 data-down:bg-white/80 data-on:opacity-100 motion-safe:transition-[opacity,scale,background-color] motion-safe:duration-150"
+              />
+            </PracticeBoard>
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <h2 className="font-semibold">
+                {title}
+                {done && <span className="text-zinc-400"> ✓</span>}
+              </h2>
+              {canDemo(goal) && (
+                <button
+                  type="button"
+                  aria-pressed={playing}
+                  disabled={done}
+                  className="shrink-0 rounded-md border border-white/15 px-3 py-1 text-sm font-medium hover:bg-white/10 disabled:opacity-40 aria-pressed:border-white aria-pressed:bg-white aria-pressed:text-black aria-pressed:hover:bg-zinc-200"
+                  onClick={showMe}
+                >
+                  Show me
+                </button>
+              )}
+            </div>
             <div className="mt-1 text-base text-zinc-300">{body}</div>
+            {turn && (
+              <p
+                className={`-mx-1.5 mt-2 rounded-md px-1.5 text-base motion-safe:transition-colors motion-safe:duration-500 ${nudged === step ? "bg-white/15 text-white" : "text-zinc-300"}`}
+              >
+                <strong className="font-semibold text-white">Your turn:</strong>{" "}
+                {turn}
+              </p>
+            )}
             <div className="mt-5 flex items-center justify-between">
               <div className="flex gap-1.5" aria-hidden>
                 {STEPS.map((_, i) => (
@@ -204,10 +288,25 @@ export function Tutorial() {
   );
 }
 
-/** The practice puzzle on a board of its own: no timer, and solving it unlocks nothing. */
-function PracticeBoard({ onEvent }: { onEvent: (e: BoardEvent) => void }) {
+/**
+ * The practice puzzle on a board of its own: no timer, and solving it unlocks nothing.
+ * `onReady` hears the board once it is up, and null just before it goes; `onInput` hears
+ * presses, pointer moves, keys and wheels on it first; `children` go over it.
+ */
+function PracticeBoard({
+  onEvent,
+  onReady,
+  onInput,
+  children,
+}: {
+  onEvent: (e: BoardEvent) => void;
+  onReady: (board: Board | null) => void;
+  onInput: (e: SyntheticEvent) => void;
+  children: ReactNode;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const report = useEffectEvent(onEvent);
+  const ready = useEffectEvent(onReady);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -220,11 +319,15 @@ function PracticeBoard({ onEvent }: { onEvent: (e: BoardEvent) => void }) {
     })
       .then((b) => {
         if (cancelled) b.destroy();
-        else board = b;
+        else {
+          board = b;
+          ready(b);
+        }
       })
       .catch((e: unknown) => console.error(e));
     return () => {
       cancelled = true;
+      if (board) ready(null);
       board?.destroy();
     };
   }, []);
@@ -232,13 +335,21 @@ function PracticeBoard({ onEvent }: { onEvent: (e: BoardEvent) => void }) {
   return (
     // font-mono: the board's clue labels take the font of this box.
     // At most 45vh, so the steps and buttons below it fit on a short screen too.
-    <div className="relative mx-auto mt-3 aspect-square w-full max-w-[45vh] overflow-hidden rounded-md bg-black font-mono">
+    // Capture handlers, so they run before the board's own listeners on the canvas.
+    <div
+      className="relative mx-auto mt-3 aspect-square w-full max-w-[45vh] overflow-hidden rounded-md bg-black font-mono"
+      onPointerDownCapture={onInput}
+      onPointerMoveCapture={onInput}
+      onKeyDownCapture={onInput}
+      onWheelCapture={onInput}
+    >
       <canvas
         ref={canvasRef}
         className="h-full w-full cursor-grab touch-none outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-inset"
         tabIndex={0}
         aria-label="Practice board"
       />
+      {children}
     </div>
   );
 }

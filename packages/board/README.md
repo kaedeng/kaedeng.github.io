@@ -33,6 +33,18 @@ board.reset();
 board.destroy();
 ```
 
+For a demo that plays the board itself:
+
+```js
+board.pointer("down", x, y, time); // also "move", "up", "leave", "cancel": the canvas's own handlers
+board.cellPoint([0, 3, 3]); // [x, y] of a cell's centre on the canvas, or null while its layer is hidden
+board.nearestFace(); // the view-cube face turned most toward the viewer: aim at its rect, then click() it
+const before = board.boxes(); // [{ min, max }, ...]
+board.setBoxes(before); // puts the boxes back afterwards
+```
+
+Coordinates are CSS px from the canvas's top-left, and `time` is in ms like `event.timeStamp`. A drag that rests within 5 px for 400 ms keeps the cell under it, so a demo drag should keep moving.
+
 - `puzzle` is the JSON printed by `cargo run -p patches-core --bin generate -- <seed>` (type `Puzzle`).
 - `answer: true` shows the stored solution; the cube still turns and zooms.
 - The canvas should fill a positioned parent. Clue labels, the vim mode line, the view cube (top right; a face shows that layer in 2D) and the 2D layer bar go in an overlay added next to the canvas, and take the parent's font.

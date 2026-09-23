@@ -16,6 +16,12 @@ pub fn orbit(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3]) {
     ([cp * sy, sp, cp * cy], [-sp * sy, cp, -sp * cy])
 }
 
+/// The face turned most toward a camera orbiting at `yaw` and `pitch`, as `(axis, sign)`
+/// like `Flat::new` takes them: e.g. the view-cube face a demo clicks.
+pub fn facing(yaw: f32, pitch: f32) -> (usize, i8) {
+    dominant(orbit(yaw, pitch).0)
+}
+
 /// One layer of the cube, seen straight on from outside a face.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Flat {
@@ -176,6 +182,22 @@ mod tests {
                 let mut want = [0.0; 3];
                 want[axis] = f32::from(sign);
                 assert!(close(orbit(yaw, pitch).0, want), "{axis} {sign}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_face_turned_most_toward_the_camera() {
+        // The starting camera sees the front, right and top faces; the front most.
+        assert_eq!(facing(0.65, 0.4), (2, 1));
+        assert_eq!(facing(1.2, 0.4), (0, 1));
+        assert_eq!(facing(0.65, 1.2), (1, 1));
+        assert_eq!(facing(PI, -0.2), (2, -1));
+        // In 2D it is the face shown, so clicking it again goes back to 3D.
+        for axis in 0..3 {
+            for sign in [1, -1] {
+                let (yaw, pitch) = Flat::new(axis, sign).angles();
+                assert_eq!(facing(yaw, pitch), (axis, sign), "{axis} {sign}");
             }
         }
     }

@@ -21,7 +21,7 @@ use crate::geom::{
 use crate::input::{Input, Moved, Released, Target};
 use crate::keys::{Cmd, Cursor, Dir, Keys, Press, axis_for};
 use crate::pick::{hidden, pick};
-use crate::view::{Flat, orbit};
+use crate::view::{Flat, facing, orbit};
 
 /// Close enough to fill the view, far enough that the whole cube fits from every angle.
 const CAMERA_DISTANCE: f32 = 12.0;
@@ -277,8 +277,6 @@ impl Game {
     /// the screen from its centre so the label clears most of the marker, flattened as
     /// `[x0, y0, x1, y1, ...]`; NaN for a clue in a hidden layer.
     pub fn labels(&self) -> Vec<f32> {
-        let s = self.scale();
-        let h = self.canvas.height() as f32;
         let (yaw, pitch) = self.angles();
         let lift = Vec3::from(orbit(yaw, pitch).1) * LABEL_LIFT;
         self.puzzle
@@ -288,11 +286,72 @@ impl Game {
                 if !self.shown.contains(c.cell) {
                     return [f32::NAN; 2];
                 }
-                let anchor = Vec3::from(cell_center(c.cell)) + lift;
-                let p = self.camera.pixel_at_position(anchor);
-                [p.x / s, (h - p.y) / s]
+                self.css_point(Vec3::from(cell_center(c.cell)) + lift)
             })
             .collect()
+    }
+
+    /// Screen position (CSS px, top-left origin) of `[x, y, z]`'s centre as `[x, y]`, e.g.
+    /// to aim a demo pointer at it; NaN while its layer is hidden.
+    pub fn cell_point(&self, x: u8, y: u8, z: u8) -> Vec<f32> {
+        let cell = [x, y, z];
+        if !self.shown.contains(cell) {
+            return vec![f32::NAN; 2];
+        }
+        self.css_point(Vec3::from(cell_center(cell))).to_vec()
+    }
+
+    /// The `[axis, sign]` of the cube face turned most toward the camera, as `view_face`
+    /// takes them; in 2D, the face shown.
+    pub fn facing(&self) -> Vec<i32> {
+        let (yaw, pitch) = self.angles();
+        let (axis, sign) = facing(yaw, pitch);
+        vec![axis as i32, i32::from(sign)]
+    }
+
+    /// The placed boxes, six numbers each: `min`, then `max`.
+    pub fn boxes(&self) -> Vec<u8> {
+        self.board
+            .boxes()
+            .iter()
+            .flat_map(|b| b.min.into_iter().chain(b.max))
+            .collect()
+    }
+
+    /// Puts the placed boxes back to `boxes` (as `boxes` gives them), e.g. after a demo:
+    /// the others shrink away and the missing ones grow back. A solve this undoes is
+    /// undone too, so the board takes input again.
+    pub fn set_boxes(&mut self, boxes: &[u8]) {
+        let want: Vec<BoxRegion> = boxes
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .map(|b| BoxRegion {
+                min: [b[0], b[1], b[2]],
+                max: [b[3], b[4], b[5]],
+            })
+            .collect();
+        let extra: Vec<BoxRegion> = self
+            .board
+            .boxes()
+            .iter()
+            .filter(|b| !want.contains(b))
+            .copied()
+            .collect();
+        for b in extra {
+            self.remove(b.min);
+        }
+        for b in want {
+            if !self.board.boxes().contains(&b) {
+                self.place(b);
+            }
+        }
+        if self.solved && !self.board.is_solved() {
+            self.solved = false;
+            for b in self.blocks.iter_mut().filter(|b| !b.removing) {
+                b.anim.retarget(block_pose(&b.region));
+            }
+        }
     }
 
     /// Per clue, 1 when a solid block other than its own stands between the camera and its
@@ -754,6 +813,14 @@ impl Game {
             self.camera.position_at_pixel(pixel).into(),
             self.camera.view_direction_at_pixel(pixel).into(),
         )
+    }
+
+    /// Where a world point shows on the canvas, in CSS px from its top-left.
+    fn css_point(&self, p: Vec3) -> [f32; 2] {
+        let s = self.scale();
+        let h = self.canvas.height() as f32;
+        let p = self.camera.pixel_at_position(p);
+        [p.x / s, (h - p.y) / s]
     }
 
     /// Physical pixels per CSS pixel of the canvas.
