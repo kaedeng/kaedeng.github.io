@@ -84,11 +84,14 @@ type Listeners = {
 // works under any base path and with any bundler that understands `new URL`.
 let wasmReady: Promise<unknown> | null = null;
 
-/** A uniquely solvable puzzle for `seed`: the same one the `generate` CLI prints. */
-export async function generatePuzzle(seed: string): Promise<Puzzle> {
+/**
+ * A uniquely solvable puzzle for `id`, a seed plus `-easy` or `-hard` for those levels:
+ * the same one the `generate` CLI prints. Its `id` is the canonical spelling.
+ */
+export async function generatePuzzle(id: string): Promise<Puzzle> {
   wasmReady ??= init();
   await wasmReady;
-  return JSON.parse(generate(seed)) as Puzzle;
+  return JSON.parse(generate(id)) as Puzzle;
 }
 
 /**

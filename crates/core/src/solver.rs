@@ -8,6 +8,11 @@ struct Cand {
 
 /// Up to `limit` tilings that satisfy every clue.
 pub fn solve(clues: &[Clue], limit: usize) -> Vec<Vec<BoxRegion>> {
+    solve_within(clues, limit, usize::MAX).expect("the search has all the steps it needs")
+}
+
+/// Like `solve`, but gives up (None) after `steps` search steps.
+pub fn solve_within(clues: &[Clue], limit: usize, steps: usize) -> Option<Vec<Vec<BoxRegion>>> {
     let cands = candidates(clues);
     let mut by_cell = vec![Vec::new(); CELLS];
     for (i, c) in cands.iter().enumerate() {
@@ -21,11 +26,13 @@ pub fn solve(clues: &[Clue], limit: usize) -> Vec<Vec<BoxRegion>> {
         cands: &cands,
         by_cell,
         limit,
+        steps: 0,
+        max_steps: steps,
         found: Vec::new(),
         stack: Vec::new(),
     };
     search.run(0, 0);
-    search.found
+    (search.steps <= steps).then_some(search.found)
 }
 
 /// Every box that holds exactly one clue and matches its volume and shape, if given.
@@ -72,6 +79,9 @@ struct Search<'a> {
     cands: &'a [Cand],
     by_cell: Vec<Vec<usize>>,
     limit: usize,
+    /// Calls to `run` so far; past `max_steps` the search stops.
+    steps: usize,
+    max_steps: usize,
     found: Vec<Vec<BoxRegion>>,
     stack: Vec<BoxRegion>,
 }
@@ -80,6 +90,10 @@ impl Search<'_> {
     /// `placed`: covered cells. `used`: clues already claimed by a box on the stack.
     fn run(&mut self, placed: u64, used: u64) {
         if self.found.len() >= self.limit {
+            return;
+        }
+        self.steps += 1;
+        if self.steps > self.max_steps {
             return;
         }
         if placed == u64::MAX {
@@ -208,5 +222,12 @@ mod tests {
             shape: None,
         }];
         assert!(solve(&clues, 2).is_empty());
+    }
+
+    #[test]
+    fn a_search_out_of_steps_gives_up() {
+        let clues = two_box_split(None);
+        assert!(solve_within(&clues, 10, 2).is_none());
+        assert_eq!(solve_within(&clues, 10, 1000).map(|s| s.len()), Some(3));
     }
 }

@@ -136,9 +136,42 @@ pub struct Clue {
     pub shape: Option<Shape>,
 }
 
+/// How much of the clues a puzzle shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    /// Every shape and volume.
+    Easy,
+    /// About two thirds of them, plus whatever uniqueness needs. The weekly puzzle.
+    #[default]
+    Medium,
+    /// Only what uniqueness needs.
+    Hard,
+}
+
+impl Level {
+    pub const ALL: [Level; 3] = [Level::Easy, Level::Medium, Level::Hard];
+
+    /// As written in ids and JSON.
+    pub fn name(self) -> &'static str {
+        match self {
+            Level::Easy => "easy",
+            Level::Medium => "medium",
+            Level::Hard => "hard",
+        }
+    }
+
+    fn is_medium(&self) -> bool {
+        *self == Level::Medium
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Puzzle {
     pub id: String,
+    /// Left out for Medium, so Medium puzzles print just as they did before levels.
+    #[serde(default, skip_serializing_if = "Level::is_medium")]
+    pub level: Level,
     pub size: u8,
     pub clues: Vec<Clue>,
     pub solution: Vec<BoxRegion>,
@@ -233,6 +266,7 @@ mod tests {
     fn puzzle_json_roundtrip_omits_hidden_volume() {
         let p = Puzzle {
             id: "t".into(),
+            level: Level::Medium,
             size: N,
             clues: vec![
                 Clue {
@@ -255,5 +289,28 @@ mod tests {
         assert!(!json.contains("null"));
         assert!(json.contains(r#""shape":"wall_x""#));
         assert_eq!(serde_json::from_str::<Puzzle>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn puzzle_json_names_the_level_unless_medium() {
+        let at = |level| Puzzle {
+            id: "t".into(),
+            level,
+            size: N,
+            clues: vec![],
+            solution: vec![],
+        };
+        let medium = serde_json::to_string(&at(Level::Medium)).unwrap();
+        assert!(!medium.contains("level"));
+        assert_eq!(
+            serde_json::from_str::<Puzzle>(&medium).unwrap(),
+            at(Level::Medium)
+        );
+        let hard = serde_json::to_string(&at(Level::Hard)).unwrap();
+        assert!(hard.contains(r#""level":"hard""#));
+        assert_eq!(
+            serde_json::from_str::<Puzzle>(&hard).unwrap(),
+            at(Level::Hard)
+        );
     }
 }

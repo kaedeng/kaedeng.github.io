@@ -4,9 +4,13 @@ export type Box = { min: Cell; max: Cell };
 export type Shape =
   "cube" | "tall" | "bar_x" | "bar_z" | "flat" | "wall_x" | "wall_z";
 export type Clue = { cell: Cell; volume?: number; shape?: Shape };
-/** What `cargo run -p patches-core --bin generate -- <seed>` prints. */
+/** How much of the clues a puzzle shows; same as Level in crates/core/src/types.rs. */
+export type Level = "easy" | "medium" | "hard";
+/** What `cargo run -p patches-core --bin generate -- <id>` prints. */
 export type Puzzle = {
   id: string;
+  /** Left out for Medium. */
+  level?: Level;
   size: number;
   clues: Clue[];
   solution: Box[];
