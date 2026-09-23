@@ -7,17 +7,20 @@ import {
   useSyncExternalStore,
   type FormEvent,
 } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { generatePuzzle, type Level, type Puzzle } from "patches-board";
 import { Cube } from "@/components/Cube";
 import { Layers } from "@/components/Layers";
+import { Solution } from "@/components/Solution";
 import { Tutorial } from "@/components/Tutorial";
 import { seedParam, withSeed } from "@/lib/seed";
+import { useDailyPuzzle, useToday } from "@/lib/useDaily";
 
-type Mode = "weekly" | "random";
+type Mode = "daily" | "random";
 
 const MODES: [Mode, string][] = [
-  ["weekly", "Weekly"],
+  ["daily", "Daily"],
   ["random", "Random"],
 ];
 
@@ -76,18 +79,20 @@ function UrlWatcher() {
 }
 
 /**
- * The game page's puzzle: this week's, or a random one generated in the browser with its
- * solution behind a disclosure. Both boards stay mounted, so switching keeps progress.
+ * The game page's puzzle: today's daily, or a random one, both generated in the browser;
+ * the random one has its solution behind a disclosure. Both boards stay mounted, so
+ * switching keeps progress.
  */
-export function GameModes({ weekly }: { weekly: Puzzle }) {
-  // Null while prerendering, so the static page is the weekly puzzle and hydrates as it.
+export function GameModes() {
+  // Null while prerendering, so the static page is the daily and hydrates as it.
   const seed = useSyncExternalStore(subscribe, urlSeed, () => null);
-  const mode: Mode = seed ? "random" : "weekly";
+  const mode: Mode = seed ? "random" : "daily";
+  const daily = useDailyPuzzle(useToday());
   const [random, setRandom] = useState<Puzzle | null>(null);
   // Mounted once shown, then kept. Mounted hidden, as when the page opens on a ?seed=,
   // its board would size its canvas to nothing.
-  const [weeklyShown, setWeeklyShown] = useState(false);
-  const puzzle = mode === "weekly" ? weekly : random;
+  const [dailyShown, setDailyShown] = useState(false);
+  const puzzle = mode === "daily" ? daily : random;
 
   // Generates the puzzle named in the address bar, then writes back its id as the
   // generator spells it (`bob-medium` is `bob`).
@@ -106,7 +111,7 @@ export function GameModes({ weekly }: { weekly: Puzzle }) {
 
   const choose = (m: Mode) => {
     if (m === mode) return;
-    if (mode === "weekly") setWeeklyShown(true);
+    if (mode === "daily") setDailyShown(true);
     // The first random puzzle is Medium, whose id is the bare seed.
     setUrlSeed(m === "random" ? (random?.id ?? randomSeed()) : null);
   };
@@ -117,7 +122,7 @@ export function GameModes({ weekly }: { weekly: Puzzle }) {
         <UrlWatcher />
       </Suspense>
       <h1 className="text-4xl font-semibold tracking-tighter sm:text-6xl">
-        Puzzle {puzzle?.id ?? "…"}
+        {mode === "daily" ? "Daily" : "Puzzle"} {puzzle?.id ?? "…"}
       </h1>
       <p className="mt-6 max-w-prose text-xl text-zinc-400">
         Fill the 4×4×4 cube with boxes. Every box holds exactly one clue and
@@ -141,11 +146,19 @@ export function GameModes({ weekly }: { weekly: Puzzle }) {
             </button>
           ))}
         </div>
-        <Tutorial />
+        <div className="flex items-center gap-4">
+          <Link
+            href="/history"
+            className="text-sm text-zinc-400 hover:text-white"
+          >
+            History
+          </Link>
+          <Tutorial />
+        </div>
       </div>
-      {(mode === "weekly" || weeklyShown) && (
-        <div className="mt-6" hidden={mode !== "weekly"}>
-          <Cube puzzle={weekly} mode="play" />
+      {daily && (mode === "daily" || dailyShown) && (
+        <div className="mt-6" hidden={mode !== "daily"}>
+          <Cube puzzle={daily} mode="play" day={daily.id} />
         </div>
       )}
       <RandomMode hidden={mode !== "random"} seed={seed} puzzle={random} />
@@ -265,7 +278,6 @@ function RandomMode({
 
 /** The random puzzle's board, and its solution behind a disclosure that starts closed. */
 function RandomBoard({ puzzle, onNew }: { puzzle: Puzzle; onNew: () => void }) {
-  const [showSolution, setShowSolution] = useState(false);
   return (
     <div className="mt-6">
       <Cube
@@ -282,23 +294,7 @@ function RandomBoard({ puzzle, onNew }: { puzzle: Puzzle; onNew: () => void }) {
           </button>
         }
       />
-      <details
-        className="mt-12"
-        open={showSolution}
-        onToggle={(e) => setShowSolution(e.currentTarget.open)}
-      >
-        <summary className="cursor-pointer text-sm text-zinc-400 hover:text-white">
-          {showSolution ? "Hide solution" : "Show solution"}
-        </summary>
-        {showSolution && (
-          <div className="mt-6">
-            <Cube puzzle={puzzle} mode="answer" />
-            <div className="mt-12">
-              <Layers puzzle={puzzle} showSolution />
-            </div>
-          </div>
-        )}
-      </details>
+      <Solution puzzle={puzzle} />
     </div>
   );
 }

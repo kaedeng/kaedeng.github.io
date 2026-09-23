@@ -1,10 +1,10 @@
 # Build the site and serve it: `just`, or `just serve 3000` for another port.
 default: serve
 
-# Build this week's puzzle, the wasm board and the static site into web/out.
+# Build the wasm board and the static site into web/out.
 build:
     pnpm install --frozen-lockfile
-    cd web && pnpm gen && pnpm wasm && pnpm build
+    cd web && pnpm wasm && pnpm build
 
 # Build, then serve web/out.
 serve port="8000": build
@@ -14,7 +14,7 @@ serve port="8000": build
 # Next's dev server, which reloads on web changes. Rust changes need a restart.
 dev:
     pnpm install --frozen-lockfile
-    cd web && pnpm gen && pnpm wasm && pnpm dev
+    cd web && pnpm wasm && pnpm dev
 
 # Everything CI checks before a deploy.
 check:

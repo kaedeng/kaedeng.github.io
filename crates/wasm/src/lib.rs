@@ -19,3 +19,11 @@ pub mod game;
 pub fn generate(id: &str) -> String {
     serde_json::to_string(&patches_core::generate(id)).expect("puzzle serialises")
 }
+
+/// The daily puzzle for `date` (`2026-09-23`) as JSON: what `generate --daily <date>`
+/// prints.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn daily(date: &str) -> String {
+    serde_json::to_string(&patches_core::daily(date)).expect("puzzle serialises")
+}

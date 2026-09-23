@@ -10,11 +10,31 @@ pub const MAX_VOLUME: u8 = 12;
 /// runs into a dead end the search needs hundreds of thousands (half a second) to leave.
 const HARD_STEPS: usize = 20_000;
 
+/// Starts a daily's key. UTF-8 never has this byte, so no seed's text hashes like a daily.
+const DAILY: u8 = 0xff;
+
 /// A uniquely solvable puzzle, fully determined by its id: a seed, plus a level suffix
 /// unless it is Medium (see `parse_id`). The puzzle's `id` is the id spelled canonically.
 pub fn generate(id: &str) -> Puzzle {
     let (seed, level) = parse_id(id);
     let id = format_id(seed, level);
+    // The whole id is hashed, so a Medium id hashes just as its seed did before levels.
+    let key = id.as_bytes().to_vec();
+    from_key(id, level, &key)
+}
+
+/// The daily puzzle for `date` (`2026-09-23`): Medium, with the date as its id. No id
+/// `generate` takes makes it, not even the same date.
+pub fn daily(date: &str) -> Puzzle {
+    from_key(date.to_string(), Level::Medium, &daily_key(date))
+}
+
+fn daily_key(date: &str) -> Vec<u8> {
+    [&[DAILY], date.as_bytes()].concat()
+}
+
+/// The puzzle `key` hashes to at `level`, named `id`.
+fn from_key(id: String, level: Level, key: &[u8]) -> Puzzle {
     // Only Hard stops early: Medium makes the puzzles it always has, and Easy's clues
     // leave its searches short anyway.
     let steps = if level == Level::Hard {
@@ -23,8 +43,7 @@ pub fn generate(id: &str) -> Puzzle {
         usize::MAX
     };
     for attempt in 0.. {
-        // The whole id is hashed, so a Medium id hashes just as its seed did before levels.
-        let mut rng = Rng::new(hash(&id, attempt));
+        let mut rng = Rng::new(hash(key, attempt));
         let partition = random_partition(&mut rng);
         let mut clues = initial_clues(&partition, level, &mut rng);
         if make_unique(&partition, &mut clues, steps) {
@@ -148,10 +167,10 @@ fn box_containing(sol: &[BoxRegion], cell: Cell) -> Option<BoxRegion> {
     sol.iter().copied().find(|b| b.contains(cell))
 }
 
-/// FNV-1a over the seed text and attempt number.
-fn hash(seed: &str, attempt: u32) -> u64 {
+/// FNV-1a over the key and attempt number.
+fn hash(key: &[u8], attempt: u32) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in seed.bytes().chain(attempt.to_le_bytes()) {
+    for &b in key.iter().chain(&attempt.to_le_bytes()) {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
@@ -306,6 +325,41 @@ mod tests {
     fn each_level_is_its_own_puzzle() {
         let [easy, medium, hard] = Level::ALL.map(|level| at(7, level).solution);
         assert!(easy != medium && medium != hard && easy != hard);
+    }
+
+    #[test]
+    fn a_daily_is_a_unique_medium_puzzle_named_by_its_date() {
+        for date in ["2026-09-22", "2026-09-23", "2026-12-31", "2027-02-28"] {
+            let p = daily(date);
+            assert_eq!(p.id, date);
+            assert_eq!(p.level, Level::Medium);
+            let sols = solve(&p.clues, 2);
+            assert_eq!(sols.len(), 1, "{date}");
+            assert_eq!(
+                sorted(sols[0].clone()),
+                sorted(p.solution.clone()),
+                "{date}"
+            );
+        }
+    }
+
+    #[test]
+    fn same_date_same_daily() {
+        assert_eq!(daily("2026-09-23"), daily("2026-09-23"));
+        assert_ne!(daily("2026-09-23").solution, daily("2026-09-24").solution);
+    }
+
+    #[test]
+    fn a_seed_spelled_like_a_date_is_not_that_daily() {
+        for date in ["2026-09-23", "2026-09-24", "2026-10-01"] {
+            assert_ne!(generate(date), daily(date), "{date}");
+        }
+    }
+
+    #[test]
+    fn no_seed_text_hashes_like_a_daily() {
+        // Every seed is text, and text is UTF-8, which a daily's key is not.
+        assert!(std::str::from_utf8(&daily_key("2026-09-23")).is_err());
     }
 
     #[test]

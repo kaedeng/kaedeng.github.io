@@ -9,13 +9,14 @@ import {
   type Status,
 } from "patches-board";
 import { Confetti } from "@/components/Confetti";
+import { recordSolve } from "@/lib/solves";
 import { unlockResume } from "@/lib/unlock";
 
 /** When the first press on a cell happened, and when the puzzle was solved. */
 type Clock = { start: number; end: number | null };
 
 /** Solve time as m:ss. */
-function formatTime(ms: number): string {
+export function formatTime(ms: number): string {
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
@@ -27,10 +28,13 @@ export function Cube({
   puzzle,
   mode,
   actions,
-  solvedNote = "Every cell is in exactly one box. A new puzzle arrives Monday.",
+  day,
+  solvedNote = "Every cell is in exactly one box. A new puzzle arrives at midnight Pacific.",
 }: {
   puzzle: Puzzle;
   mode: "play" | "answer";
+  /** A daily's date, to record its solve under for the history calendar. */
+  day?: string;
   /** More buttons, shown next to Reset and Play again. */
   actions?: ReactNode;
   solvedNote?: string;
@@ -41,6 +45,11 @@ export function Cube({
   const [error, setError] = useState<string | null>(null);
   const [clock, setClock] = useState<Clock | null>(null);
   const [now, setNow] = useState(0);
+  const solvedIn = clock?.end ? clock.end - clock.start : null;
+
+  useEffect(() => {
+    if (day && solvedIn !== null) recordSolve(day, solvedIn);
+  }, [day, solvedIn]);
 
   // Ticks the visible timer once a second while it runs.
   useEffect(() => {
@@ -144,7 +153,7 @@ export function Cube({
             className="mt-2 bg-clip-text text-5xl font-semibold tracking-tighter text-transparent sm:text-6xl"
             style={{ backgroundImage: SOLVED_GRADIENT }}
           >
-            {clock?.end ? `in ${formatTime(clock.end - clock.start)}` : "Nice."}
+            {solvedIn !== null ? `in ${formatTime(solvedIn)}` : "Nice."}
           </p>
           <p className="mt-4 text-zinc-400">{solvedNote}</p>
           <div className="mt-6 flex items-center gap-4">

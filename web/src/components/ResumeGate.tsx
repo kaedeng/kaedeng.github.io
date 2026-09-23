@@ -15,7 +15,7 @@ export function ResumeGate({ children }: { children: ReactNode }) {
         Locked
       </h1>
       <p className="mt-6 max-w-prose text-xl text-zinc-400">
-        Solve this week&apos;s puzzle to open the résumé.
+        Solve today&apos;s puzzle to open the résumé.
       </p>
       <Link
         href="/"

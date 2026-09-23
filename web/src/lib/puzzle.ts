@@ -1,7 +1,4 @@
-import type { Box, Cell, Clue, Puzzle, Shape } from "patches-board";
-import data from "@/puzzle.json";
-
-export const puzzle = data as Puzzle;
+import type { Box, Cell, Clue, Shape } from "patches-board";
 
 export function contains(b: Box, [x, y, z]: Cell): boolean {
   return (

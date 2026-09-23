@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { clueColors, PALETTE } from "../../../packages/board/src/puzzle.ts";
 
 /** At most 2 cells apart, centre to centre: the rule clueColors keeps apart. */
@@ -46,18 +45,24 @@ function chroma(hex) {
   return Math.hypot(a, bb);
 }
 
-test("nearby clues differ in colour in this week's puzzle", () => {
-  const weekly = new URL("../puzzle.json", import.meta.url);
-  assertNearbyCluesDiffer(JSON.parse(readFileSync(weekly, "utf8")));
+/** What the `generate` CLI prints for `args`. */
+function generate(...args) {
+  const json = execFileSync("cargo", [
+    ...["run", "-q", "--release", "-p", "patches-core"],
+    ...["--bin", "generate", "--", ...args],
+  ]);
+  return JSON.parse(json);
+}
+
+test("nearby clues differ in colour in daily puzzles", () => {
+  for (const day of ["2026-09-22", "2026-09-23", "2026-09-24"]) {
+    assertNearbyCluesDiffer(generate("--daily", day));
+  }
 });
 
 test("nearby clues differ in colour in generated puzzles", () => {
   for (const seed of ["2026-W40", "2026-W41", "3fa9c2", "b07e11", "e5d402"]) {
-    const json = execFileSync("cargo", [
-      ...["run", "-q", "--release", "-p", "patches-core"],
-      ...["--bin", "generate", "--", seed],
-    ]);
-    assertNearbyCluesDiffer(JSON.parse(json));
+    assertNearbyCluesDiffer(generate(seed));
   }
 });
 

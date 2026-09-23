@@ -142,7 +142,7 @@ pub struct Clue {
 pub enum Level {
     /// Every shape and volume.
     Easy,
-    /// About two thirds of them, plus whatever uniqueness needs. The weekly puzzle.
+    /// About two thirds of them, plus whatever uniqueness needs. The daily puzzle.
     #[default]
     Medium,
     /// Only what uniqueness needs.

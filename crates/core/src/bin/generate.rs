@@ -1,9 +1,13 @@
 fn main() {
-    let Some(id) = std::env::args().nth(1) else {
-        eprintln!("usage: generate <seed>[-easy|-hard]");
-        std::process::exit(2);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let puzzle = match args.as_slice() {
+        [flag, date] if flag == "--daily" => patches_core::daily(date),
+        [id] => patches_core::generate(id),
+        _ => {
+            eprintln!("usage: generate <seed>[-easy|-hard]\n       generate --daily <yyyy-mm-dd>");
+            std::process::exit(2);
+        }
     };
-    let puzzle = patches_core::generate(&id);
     println!(
         "{}",
         serde_json::to_string_pretty(&puzzle).expect("puzzle serialises")

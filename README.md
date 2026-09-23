@@ -185,7 +185,9 @@ That is a bug too, and I would rather fix it than have you guess.
 
 ## This site: 3D Patches
 
-Live at <https://kaedeng.github.io/>. A weekly 3D take on LinkedIn's Patches puzzle: fill a 4×4×4 cube with boxes so every box holds exactly one clue. The board is drawn in WebGL2 by Rust compiled to WebAssembly; the pages are a Next.js static export.
+Live at <https://kaedeng.github.io/>. A daily 3D take on LinkedIn's Patches puzzle: fill a 4×4×4 cube with boxes so every box holds exactly one clue. The board is drawn in WebGL2 by Rust compiled to WebAssembly; the pages are a Next.js static export.
+
+A new daily comes out at midnight Pacific time. The browser generates it from the date (`cargo run -p patches-core --bin generate -- --daily 2026-09-23` prints the same one), so no rebuild is needed; `/history` has every daily since 2026-09-22, the day the site went live. Dailies are hashed apart from seeds, so Random and the seed box never land on one.
 
 ```
 crates/core      rules, solver, generator (cargo test -p patches-core)
@@ -200,11 +202,10 @@ Run it locally:
 rustup target add wasm32-unknown-unknown && brew install wasm-pack   # once
 pnpm install  # at the repo root: a pnpm workspace of web and packages/board
 cd web
-pnpm gen      # writes src/puzzle.json for the current ISO week (SEED=... overrides)
 pnpm wasm     # builds packages/board: crates/wasm with wasm-pack, then tsc
 pnpm dev      # http://localhost:3000
 ```
 
 Or, with [just](https://github.com/casey/just) (`brew install just`), from the repo root: `just` builds everything and serves it at <http://localhost:8000>; `just dev` runs the dev server and `just check` runs what CI runs.
 
-Deploys happen from `.github/workflows/deploy.yml` on every push to `main`, every Monday (cron) so a new puzzle appears, and on demand (`gh workflow run deploy.yml -f seed=...`).
+Deploys happen from `.github/workflows/deploy.yml` on every push to `main`, and on demand (`gh workflow run deploy.yml`).

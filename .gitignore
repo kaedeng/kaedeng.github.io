@@ -3,4 +3,3 @@ target/
 node_modules/
 packages/board/dist/
 packages/board/wasm/
-web/src/puzzle.json

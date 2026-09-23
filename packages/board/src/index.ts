@@ -1,4 +1,4 @@
-import init, { Game, generate } from "../wasm/patches_wasm.js";
+import init, { daily, Game, generate } from "../wasm/patches_wasm.js";
 import { Fingers } from "./fingers.js";
 import {
   labelFont,
@@ -103,6 +103,16 @@ export async function generatePuzzle(id: string): Promise<Puzzle> {
   wasmReady ??= init();
   await wasmReady;
   return JSON.parse(generate(id)) as Puzzle;
+}
+
+/**
+ * The daily puzzle for `date` (`2026-09-23`): the one `generate --daily <date>` prints.
+ * No id `generatePuzzle` takes makes it, not even the same date.
+ */
+export async function dailyPuzzle(date: string): Promise<Puzzle> {
+  wasmReady ??= init();
+  await wasmReady;
+  return JSON.parse(daily(date)) as Puzzle;
 }
 
 /**

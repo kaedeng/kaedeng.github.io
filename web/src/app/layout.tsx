@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "3D Patches",
   description:
-    "A weekly 3D take on the Patches puzzle, rendered with Rust and WebAssembly.",
+    "A daily 3D take on the Patches puzzle, rendered with Rust and WebAssembly.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -50,7 +50,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           {children}
         </main>
         <footer className="mx-auto w-full max-w-3xl px-6 py-8 text-sm text-zinc-400">
-          Made by Kae. Rust + WebAssembly + Next.js. New puzzle every Monday.
+          Made by Kae. Rust + WebAssembly + Next.js. New puzzle every day at
+          midnight Pacific.
         </footer>
       </body>
     </html>

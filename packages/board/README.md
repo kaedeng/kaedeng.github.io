@@ -51,6 +51,7 @@ Coordinates are CSS px from the canvas's top-left, and `time` is in ms like `eve
 - The drawing buffer follows the canvas's CSS size times `devicePixelRatio`, so the canvas may resize (window resizes, phone turns).
 - The `.wasm` is fetched from next to `wasm/patches_wasm.js` (`import.meta.url`). That works as plain ES modules with no bundler, under any base path, and with bundlers that handle `new URL(..., import.meta.url)` (Vite, webpack 5, Turbopack).
 - `generatePuzzle(id)` resolves to the same puzzle as the `generate` CLI for that id, generated in the browser.
+- `dailyPuzzle(date)` resolves to the daily puzzle for `date` (`2026-09-23`), as `generate --daily <date>` prints it. No seed makes a daily, not even the same date.
 - `PALETTE`, `clueColors`, `clueText` and the puzzle types are exported too, for UI around the board.
 
 ## Moving it to another site

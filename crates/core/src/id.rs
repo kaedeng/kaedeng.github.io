@@ -4,10 +4,10 @@
 use crate::types::Level;
 
 /// Splits `id` into the generator's seed and level: `a3f9c1-hard` is seed `a3f9c1` at Hard.
-/// Only a known level counts as a suffix, since weekly seeds like `2026-W39` have a `-`
-/// too; its case doesn't matter, but the seed keeps its own. Without one the whole id is a
-/// Medium seed, so any text is an id. Surrounding whitespace is dropped: it tends to come
-/// along when an id is pasted.
+/// Only a known level counts as a suffix, since seeds like `2026-W39` have a `-` too; its
+/// case doesn't matter, but the seed keeps its own. Without one the whole id is a Medium
+/// seed, so any text is an id. Surrounding whitespace is dropped: it tends to come along
+/// when an id is pasted.
 pub fn parse_id(id: &str) -> (&str, Level) {
     let id = id.trim();
     split_level(id).unwrap_or((id, Level::Medium))
@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn anything_else_is_a_medium_seed() {
         assert_eq!(parse_id("a3f9c1"), ("a3f9c1", Level::Medium));
-        // Weekly seeds have a `-` too: only a known level counts.
+        // Seeds like this have a `-` too: only a known level counts.
         assert_eq!(parse_id("2026-W39"), ("2026-W39", Level::Medium));
         assert_eq!(parse_id("bob-tricky"), ("bob-tricky", Level::Medium));
         assert_eq!(parse_id("bob-hardest"), ("bob-hardest", Level::Medium));
