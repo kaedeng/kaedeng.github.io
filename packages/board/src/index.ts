@@ -1,4 +1,4 @@
-import init, { Game } from "../wasm/patches_wasm.js";
+import init, { Game, generate } from "../wasm/patches_wasm.js";
 import { clueColor, clueText, PALETTE, type Puzzle } from "./puzzle.js";
 
 export * from "./puzzle.js";
@@ -35,6 +35,13 @@ type Listeners = {
 // The .wasm is fetched from next to the wasm-bindgen glue (`import.meta.url`), so it
 // works under any base path and with any bundler that understands `new URL`.
 let wasmReady: Promise<unknown> | null = null;
+
+/** A uniquely solvable puzzle for `seed`: the same one the `generate` CLI prints. */
+export async function generatePuzzle(seed: string): Promise<Puzzle> {
+  wasmReady ??= init();
+  await wasmReady;
+  return JSON.parse(generate(seed)) as Puzzle;
+}
 
 /**
  * Draws `puzzle` on `canvas` and forwards the canvas's pointer, wheel, key and focus

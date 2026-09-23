@@ -37,6 +37,7 @@ board.destroy();
 - The canvas should fill a positioned parent. Clue labels and the vim mode line go in an overlay added next to the canvas, and take the parent's font.
 - The drawing buffer is sized once, at mount: the canvas's CSS size times `devicePixelRatio`.
 - The `.wasm` is fetched from next to `wasm/patches_wasm.js` (`import.meta.url`). That works as plain ES modules with no bundler, under any base path, and with bundlers that handle `new URL(..., import.meta.url)` (Vite, webpack 5, Turbopack).
+- `generatePuzzle(seed)` resolves to the same puzzle as the `generate` CLI for that seed, generated in the browser.
 - `PALETTE`, `clueColor`, `clueText` and the puzzle types are exported too, for UI around the board.
 
 ## Moving it to another site

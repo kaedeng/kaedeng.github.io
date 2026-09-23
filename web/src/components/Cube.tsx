@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   mountBoard,
   PALETTE,
@@ -26,9 +26,14 @@ const SOLVED_GRADIENT = `linear-gradient(90deg, ${PALETTE.slice(0, 6).join(", ")
 export function Cube({
   puzzle,
   mode,
+  actions,
+  solvedNote = "Every cell is in exactly one box. A new puzzle arrives Monday.",
 }: {
   puzzle: Puzzle;
   mode: "play" | "answer";
+  /** More buttons, shown next to Reset and Play again. */
+  actions?: ReactNode;
+  solvedNote?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const boardRef = useRef<Board | null>(null);
@@ -109,7 +114,7 @@ export function Cube({
         )}
       </div>
       {mode === "play" && status && !status.solved && (
-        <div className="mt-6 flex items-center justify-between gap-4">
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
           <span className="text-sm text-zinc-400">
             {`${status.boxes} of ${puzzle.clues.length} boxes placed`}
             {status.wrong > 0 && (
@@ -120,6 +125,7 @@ export function Cube({
             <span className="font-mono text-sm text-zinc-400 tabular-nums">
               {formatTime(clock ? Math.max(now, clock.start) - clock.start : 0)}
             </span>
+            {actions}
             <button
               type="button"
               className="rounded-md border border-white/15 px-4 py-2 text-sm font-medium hover:bg-white/10"
@@ -140,16 +146,17 @@ export function Cube({
           >
             {clock?.end ? `in ${formatTime(clock.end - clock.start)}` : "Nice."}
           </p>
-          <p className="mt-4 text-zinc-400">
-            Every cell is in exactly one box. A new puzzle arrives Monday.
-          </p>
-          <button
-            type="button"
-            className="mt-6 rounded-md bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200"
-            onClick={() => reset()}
-          >
-            Play again
-          </button>
+          <p className="mt-4 text-zinc-400">{solvedNote}</p>
+          <div className="mt-6 flex items-center gap-4">
+            <button
+              type="button"
+              className="rounded-md bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200"
+              onClick={() => reset()}
+            >
+              Play again
+            </button>
+            {actions}
+          </div>
         </div>
       )}
     </div>
