@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { generatePuzzle, type Puzzle } from "patches-board";
 import { Cube } from "@/components/Cube";
 import { Layers } from "@/components/Layers";
+import { Tutorial } from "@/components/Tutorial";
 
 type Mode = "weekly" | "random";
 
@@ -21,15 +22,8 @@ function randomSeed(): string {
 /**
  * The game page's puzzle: this week's, or a random one generated in the browser with its
  * solution behind a disclosure. Both boards stay mounted, so switching keeps progress.
- * `children` go between the boards and the layer grids.
  */
-export function GameModes({
-  weekly,
-  children,
-}: {
-  weekly: Puzzle;
-  children: ReactNode;
-}) {
+export function GameModes({ weekly }: { weekly: Puzzle }) {
   const [mode, setMode] = useState<Mode>("weekly");
   const [random, setRandom] = useState<Puzzle | null>(null);
   const [showSolution, setShowSolution] = useState(false);
@@ -53,22 +47,25 @@ export function GameModes({
         Fill the 4×4×4 cube with boxes. Every box holds exactly one clue and
         takes that clue&apos;s shape and volume.
       </p>
-      <div
-        role="group"
-        aria-label="Puzzle"
-        className="mt-12 inline-flex rounded-md border border-white/15 p-0.5 text-sm font-medium"
-      >
-        {MODES.map(([m, label]) => (
-          <button
-            key={m}
-            type="button"
-            aria-pressed={mode === m}
-            onClick={() => choose(m)}
-            className={`rounded px-3 py-1.5 ${mode === m ? "bg-white text-black" : "text-zinc-400 hover:text-white"}`}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="mt-12 flex items-center justify-between gap-4">
+        <div
+          role="group"
+          aria-label="Puzzle"
+          className="inline-flex rounded-md border border-white/15 p-0.5 text-sm font-medium"
+        >
+          {MODES.map(([m, label]) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={mode === m}
+              onClick={() => choose(m)}
+              className={`rounded px-3 py-1.5 ${mode === m ? "bg-white text-black" : "text-zinc-400 hover:text-white"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <Tutorial />
       </div>
       <div className="mt-6" hidden={mode !== "weekly"}>
         <Cube puzzle={weekly} mode="play" />
@@ -109,7 +106,6 @@ export function GameModes({
           </details>
         </div>
       )}
-      {children}
       {puzzle && (
         <details className="mt-16">
           <summary className="cursor-pointer text-sm text-zinc-400 hover:text-white">

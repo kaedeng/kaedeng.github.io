@@ -13,6 +13,8 @@ export type BoardOptions = {
   onStatus?: (status: Status) => void;
   /** Called on every press on a cell and every board key, e.g. to start a timer. */
   onPlay?: () => void;
+  /** Called when the camera turns, or switches between 3D and a flat 2D layer. */
+  onView?: (flat: boolean) => void;
 };
 
 export type Board = {
@@ -89,6 +91,7 @@ export async function mountBoard(
 
   let raf = 0;
   let last = 0;
+  let view = "";
   // Draws on animation frames until the tweens settle; no frames while idle.
   const animate = () => {
     if (raf) return;
@@ -105,6 +108,9 @@ export async function mountBoard(
   const refresh = (boardChanged: boolean) => {
     placeLabels(game, overlay.labels);
     showView(game, overlay, puzzle.size);
+    const now = `${game.view_angles()} ${game.view_depth()}`;
+    if (view && now !== view) options.onView?.(game.view_depth() >= 0);
+    view = now;
     if (boardChanged) {
       options.onStatus?.({
         boxes: game.box_count(),

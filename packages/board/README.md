@@ -27,6 +27,7 @@ import { mountBoard } from "patches-board";
 const board = await mountBoard(canvas, puzzle, {
   onStatus: ({ boxes, wrong, solved }) => {}, // on mount and after every change
   onPlay: () => {}, // every press on a cell or board key, e.g. to start a timer
+  onView: (flat) => {}, // the camera turned, or switched between 3D and a 2D layer
 });
 board.reset();
 board.destroy();
