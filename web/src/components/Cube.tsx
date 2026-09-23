@@ -9,6 +9,7 @@ import {
   type Status,
 } from "patches-board";
 import { Confetti } from "@/components/Confetti";
+import { unlockResume } from "@/lib/unlock";
 
 /** When the first press on a cell happened, and when the puzzle was solved. */
 type Clock = { start: number; end: number | null };
@@ -57,6 +58,7 @@ export function Cube({
       answer: mode === "answer",
       onStatus: (s) => {
         setStatus(s);
+        if (s.solved && mode === "play") unlockResume();
         const t = performance.now();
         setClock((c) =>
           c && c.end === null && s.solved ? { ...c, end: t } : c,

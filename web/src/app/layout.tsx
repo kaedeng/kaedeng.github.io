@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
+import { ProfileButton } from "@/components/ProfileButton";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -27,10 +28,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="flex min-h-full flex-col font-sans text-lg leading-relaxed">
         <header className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-8">
-          <Link href="/" className="font-semibold tracking-tight">
-            3D Patches
-          </Link>
-          <nav className="flex gap-6 text-sm text-zinc-400">
+          <div className="flex items-center gap-3">
+            <ProfileButton />
+            <Link href="/" className="font-semibold tracking-tight">
+              3D Patches
+            </Link>
+          </div>
+          <nav className="flex gap-4 text-sm text-zinc-400 sm:gap-6">
             <Link href="/" className="hover:text-white">
               Game
             </Link>
