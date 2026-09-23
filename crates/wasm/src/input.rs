@@ -7,7 +7,7 @@ use patches_core::{BoxRegion, Cell};
 pub const CLICK_SLOP: f32 = 5.0;
 /// How long (ms) a drag must rest on a cell for the box to keep reaching it after the
 /// pointer moves on. Cells only passed on the way are not kept.
-pub const DWELL_MS: f64 = 250.0;
+pub const DWELL_MS: f64 = 400.0;
 
 /// What a press landed on.
 #[derive(Clone, Copy, Debug, PartialEq)]
