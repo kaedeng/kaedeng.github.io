@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { PALETTE } from "@/lib/puzzle";
+import { PALETTE } from "patches-board";
 
 const PIECES = 160;
 const DURATION_MS = 3500;

@@ -1,11 +1,5 @@
-import {
-  boxIndexAt,
-  clueAt,
-  clueColor,
-  clueIndexOf,
-  clueText,
-  type Puzzle,
-} from "@/lib/puzzle";
+import { clueColor, clueText, type Puzzle } from "patches-board";
+import { boxIndexAt, clueAt, clueIndexOf } from "@/lib/puzzle";
 import { ShapeIcon } from "@/components/ShapeIcon";
 
 /** The cube as horizontal layers (y = 0 is the bottom). Columns are x, rows are z. */

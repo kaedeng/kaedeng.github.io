@@ -1,7 +1,5 @@
 .next
 out
-public/wasm
-pnpm-lock.yaml
 next-env.d.ts
 AGENTS.md
 src/puzzle.json

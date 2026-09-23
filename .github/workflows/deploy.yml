@@ -31,15 +31,11 @@ jobs:
       - run: cargo clippy -p patches-core --all-targets -- -D warnings
       - run: cargo clippy -p patches-wasm --target wasm32-unknown-unknown -- -D warnings
       - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-        working-directory: web
       - run: pnpm gen && pnpm wasm
         working-directory: web
         env:

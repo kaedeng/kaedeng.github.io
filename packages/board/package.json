@@ -1,0 +1,23 @@
+{
+  "name": "patches-board",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The 3D Patches board: a Rust/WebAssembly renderer and a framework-free mountBoard().",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm"
+  ],
+  "scripts": {
+    "build": "wasm-pack build ../../crates/wasm --target web --release --no-pack --out-dir ../../packages/board/wasm && rm wasm/.gitignore && tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}

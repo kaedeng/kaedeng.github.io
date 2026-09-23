@@ -14,11 +14,8 @@ pub const DWELL_MS: f64 = 400.0;
 pub enum Target {
     Nothing,
     Empty(Cell),
-    /// A cell of the placed box `region`.
-    Block {
-        cell: Cell,
-        region: BoxRegion,
-    },
+    /// A cell of this placed box.
+    Block(BoxRegion),
 }
 
 #[derive(Debug, PartialEq)]
@@ -82,7 +79,7 @@ impl Input {
                 anchor: c,
                 extent: BoxRegion::spanning(c, c),
             },
-            Target::Block { region, .. } => Mode::Extend {
+            Target::Block(region) => Mode::Extend {
                 block: region,
                 extent: region,
             },
@@ -311,18 +308,11 @@ mod tests {
         max: [0, 1, 0],
     };
 
-    fn on_block() -> Target {
-        Target::Block {
-            cell: A,
-            region: BLOCK,
-        }
-    }
-
     #[test]
     fn click_on_a_block_removes_it_and_clears_pending() {
         let mut input = with_pending(C);
         assert_eq!(
-            click(&mut input, on_block(), Some(A)),
+            click(&mut input, Target::Block(BLOCK), Some(A)),
             Released::Remove(BLOCK)
         );
         assert_eq!(input.pending(), None);
@@ -331,7 +321,7 @@ mod tests {
     #[test]
     fn drag_from_a_block_extends_it() {
         let mut input = Input::default();
-        input.down((0.0, 0.0), on_block());
+        input.down((0.0, 0.0), Target::Block(BLOCK));
         assert!(input.building());
         let grown = BoxRegion::spanning(A, [2, 1, 0]);
         assert_eq!(
@@ -350,7 +340,7 @@ mod tests {
     #[test]
     fn drag_from_a_block_released_off_grid_keeps_it() {
         let mut input = Input::default();
-        input.down((0.0, 0.0), on_block());
+        input.down((0.0, 0.0), Target::Block(BLOCK));
         input.moved((20.0, 0.0), Some([2, 0, 0]), 0.0);
         assert_eq!(input.up(None), Released::Nothing);
     }

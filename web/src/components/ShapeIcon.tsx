@@ -1,4 +1,5 @@
-import { SHAPE_NAME, SHAPE_SIZE, type Shape } from "@/lib/puzzle";
+import type { Shape } from "patches-board";
+import { SHAPE_NAME, SHAPE_SIZE } from "@/lib/puzzle";
 
 const COS30 = Math.cos(Math.PI / 6);
 /** Shading of the top, +x and +z faces. */

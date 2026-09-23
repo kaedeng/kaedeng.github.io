@@ -1,7 +1,8 @@
 import { Cube } from "@/components/Cube";
 import { Layers } from "@/components/Layers";
 import { ShapeIcon } from "@/components/ShapeIcon";
-import { puzzle, SHAPE_NAME, type Shape } from "@/lib/puzzle";
+import { puzzle, SHAPE_NAME } from "@/lib/puzzle";
+import type { Shape } from "patches-board";
 
 export default function Home() {
   return (

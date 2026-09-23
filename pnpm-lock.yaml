@@ -6,11 +6,22 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  packages/board:
+    devDependencies:
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+
+  web:
     dependencies:
       next:
         specifier: 16.3.6
         version: 16.3.6(@babel/core@7.29.7)(@types/node@20.19.43)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      patches-board:
+        specifier: workspace:*
+        version: link:../packages/board
       react:
         specifier: 19.2.8
         version: 19.2.8

@@ -10,10 +10,11 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "gen": "cargo run --release -q -p patches-core --bin generate -- \"${SEED:-$(date -u +%G-W%V)}\" > src/puzzle.json",
-    "wasm": "wasm-pack build --target web --release --out-dir ../../web/public/wasm ../crates/wasm"
+    "wasm": "pnpm --filter patches-board build"
   },
   "dependencies": {
     "next": "16.3.6",
+    "patches-board": "workspace:*",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -28,6 +29,5 @@
     "prettier": "^3.9.8",
     "tailwindcss": "^4",
     "typescript": "^5"
-  },
-  "packageManager": "pnpm@10.31.0"
+  }
 }

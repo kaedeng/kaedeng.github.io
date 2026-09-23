@@ -1,4 +1,6 @@
 .DS_Store
 target/
-web/public/wasm/
+node_modules/
+packages/board/dist/
+packages/board/wasm/
 web/src/puzzle.json

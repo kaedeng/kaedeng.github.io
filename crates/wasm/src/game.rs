@@ -37,26 +37,6 @@ const PITCH_RANGE: (f32, f32) = (-1.5, 1.5);
 /// Outline of a box that breaks a rule, like Patches' red patch.
 const WRONG: Srgba = Srgba::new_opaque(0xef, 0x44, 0x44);
 
-/// Same colours as `PALETTE` in web/src/lib/puzzle.ts so the 3D view matches the layer grids.
-const PALETTE: [Srgba; 16] = [
-    Srgba::new_opaque(0xf1, 0xb1, 0xb1),
-    Srgba::new_opaque(0xb1, 0xf1, 0xc4),
-    Srgba::new_opaque(0xd6, 0xb1, 0xf1),
-    Srgba::new_opaque(0xf1, 0xe9, 0xb1),
-    Srgba::new_opaque(0xb1, 0xe6, 0xf1),
-    Srgba::new_opaque(0xf1, 0xb1, 0xd4),
-    Srgba::new_opaque(0xc1, 0xf1, 0xb1),
-    Srgba::new_opaque(0xb4, 0xb1, 0xf1),
-    Srgba::new_opaque(0xf1, 0xc6, 0xb1),
-    Srgba::new_opaque(0xb1, 0xf1, 0xd9),
-    Srgba::new_opaque(0xec, 0xb1, 0xf1),
-    Srgba::new_opaque(0xe4, 0xf1, 0xb1),
-    Srgba::new_opaque(0xb1, 0xcd, 0xf1),
-    Srgba::new_opaque(0xf1, 0xd8, 0xb1),
-    Srgba::new_opaque(0xf1, 0xb1, 0xc2),
-    Srgba::new_opaque(0xb1, 0xf1, 0xb1),
-];
-
 struct Block {
     region: BoxRegion,
     color: Srgba,
@@ -129,6 +109,8 @@ pub struct Game {
     ambient: AmbientLight,
     sun: DirectionalLight,
     puzzle: Puzzle,
+    /// Clue `i` is drawn in `palette[i % palette.len()]`.
+    palette: Vec<Srgba>,
     board: Board,
     input: Input,
     keys: Keys,
@@ -144,15 +126,21 @@ pub struct Game {
 
 #[wasm_bindgen]
 impl Game {
-    /// `answer = true` shows the stored solution and ignores input.
+    /// `answer = true` shows the stored solution and ignores input. `palette` holds the
+    /// clue colours as `0xRRGGBB`.
     #[wasm_bindgen(constructor)]
     pub fn new(
         canvas: HtmlCanvasElement,
         puzzle_json: &str,
         answer: bool,
+        palette: &[u32],
     ) -> Result<Game, JsValue> {
         console_error_panic_hook::set_once();
         let puzzle: Puzzle = serde_json::from_str(puzzle_json).map_err(err)?;
+        let palette: Vec<Srgba> = palette
+            .iter()
+            .map(|&c| Srgba::new_opaque((c >> 16) as u8, (c >> 8) as u8, c as u8))
+            .collect();
         let context = gl_context(&canvas)?;
 
         let camera = Camera::new_perspective(
@@ -166,8 +154,8 @@ impl Game {
         );
         let cube = CpuMesh::cube();
         let lines = grid_lines(&WHOLE);
-        let (dot_poses, dot_colors) = dot_instances(&puzzle, &WHOLE);
-        let (marker_poses, marker_colors) = marker_instances(&puzzle, &WHOLE);
+        let (dot_poses, dot_colors) = dot_instances(&puzzle, &palette, &WHOLE);
+        let (marker_poses, marker_colors) = marker_instances(&puzzle, &palette, &WHOLE);
         let mut game = Game {
             wires: Gm::new(
                 instanced(&context, &cube, &lines, vec![Srgba::WHITE; lines.len()]),
@@ -204,6 +192,7 @@ impl Game {
             shown: WHOLE,
             context,
             puzzle,
+            palette,
             input: Input::default(),
             keys: Keys::default(),
             cursor: Cursor::new([N - 1; 3]),
@@ -531,7 +520,7 @@ impl Game {
         let color = self
             .board
             .clue_of(r)
-            .map_or(WRONG, |c| PALETTE[c % PALETTE.len()]);
+            .map_or(WRONG, |c| self.palette[c % self.palette.len()]);
         (color, self.board.fault(r).is_some())
     }
 
@@ -625,10 +614,7 @@ impl Game {
         match self.pick_cell(x, y) {
             None => Target::Nothing,
             Some(c) => match self.board.box_at(c) {
-                Some(i) => Target::Block {
-                    cell: c,
-                    region: self.board.boxes()[i],
-                },
+                Some(i) => Target::Block(self.board.boxes()[i]),
                 None => Target::Empty(c),
             },
         }
@@ -683,9 +669,9 @@ impl Game {
         let lines = grid_lines(&self.shown);
         self.wires
             .set_instances(&instances(&lines, vec![Srgba::WHITE; lines.len()]));
-        let (poses, colors) = dot_instances(&self.puzzle, &self.shown);
+        let (poses, colors) = dot_instances(&self.puzzle, &self.palette, &self.shown);
         self.dots.set_instances(&instances(&poses, colors));
-        let (poses, colors) = marker_instances(&self.puzzle, &self.shown);
+        let (poses, colors) = marker_instances(&self.puzzle, &self.palette, &self.shown);
         self.markers.set_instances(&instances(&poses, colors));
     }
 }
@@ -736,7 +722,7 @@ fn unlit(context: &Context) -> ColorMaterial {
 }
 
 /// White lattice dots, plus a round marker for each shown clue that allows any shape.
-fn dot_instances(puzzle: &Puzzle, shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba>) {
+fn dot_instances(puzzle: &Puzzle, palette: &[Srgba], shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba>) {
     let mut poses: Vec<Pose> = lattice_dots(shown)
         .into_iter()
         .map(|center| Pose {
@@ -751,14 +737,18 @@ fn dot_instances(puzzle: &Puzzle, shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba>) 
                 center: cell_center(clue.cell),
                 half: [MARK_R; 3],
             });
-            colors.push(PALETTE[i % PALETTE.len()]);
+            colors.push(palette[i % palette.len()]);
         }
     }
     (poses, colors)
 }
 
 /// A small cuboid in its box's shape for each shown clue that names one.
-fn marker_instances(puzzle: &Puzzle, shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba>) {
+fn marker_instances(
+    puzzle: &Puzzle,
+    palette: &[Srgba],
+    shown: &BoxRegion,
+) -> (Vec<Pose>, Vec<Srgba>) {
     let (mut poses, mut colors) = (Vec::new(), Vec::new());
     for (i, clue) in puzzle.clues.iter().enumerate() {
         if let Some(shape) = clue.shape
@@ -768,7 +758,7 @@ fn marker_instances(puzzle: &Puzzle, shown: &BoxRegion) -> (Vec<Pose>, Vec<Srgba
                 center: cell_center(clue.cell),
                 half: marker_half(shape),
             });
-            colors.push(PALETTE[i % PALETTE.len()]);
+            colors.push(palette[i % palette.len()]);
         }
     }
     (poses, colors)

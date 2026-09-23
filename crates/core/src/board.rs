@@ -54,10 +54,6 @@ impl Board {
         }
     }
 
-    pub fn clues(&self) -> &[Clue] {
-        &self.clues
-    }
-
     pub fn boxes(&self) -> &[BoxRegion] {
         &self.boxes
     }
@@ -81,7 +77,7 @@ impl Board {
         fault(&self.clues, b)
     }
 
-    /// Index into `clues()` of the clue inside `b`, if it holds exactly one.
+    /// Index into the clues of the clue inside `b`, if it holds exactly one.
     pub fn clue_of(&self, b: &BoxRegion) -> Option<usize> {
         let mut inside = (0..self.clues.len()).filter(|&i| b.contains(self.clues[i].cell));
         match (inside.next(), inside.next()) {

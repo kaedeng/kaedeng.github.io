@@ -1,48 +1,17 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type PointerEvent,
-} from "react";
+  mountBoard,
+  PALETTE,
+  type Board,
+  type Puzzle,
+  type Status,
+} from "patches-board";
 import { Confetti } from "@/components/Confetti";
-import { clueColor, clueText, PALETTE, type Puzzle } from "@/lib/puzzle";
 
-// Built by `pnpm wasm` into public/wasm and loaded at runtime, outside the bundler.
-type Wasm = typeof import("../../public/wasm/patches_wasm");
-type Game = InstanceType<Wasm["Game"]>;
-type Status = { boxes: number; wrong: number; solved: boolean };
 /** When the first press on a cell happened, and when the puzzle was solved. */
 type Clock = { start: number; end: number | null };
-
-const WASM_JS = "/wasm/patches_wasm.js";
-const WASM_BIN = "/wasm/patches_wasm_bg.wasm";
-
-let wasmReady: Promise<Wasm> | null = null;
-
-function loadWasm(): Promise<Wasm> {
-  wasmReady ??= (async () => {
-    const wasm = (await import(
-      /* webpackIgnore: true */ /* turbopackIgnore: true */ WASM_JS
-    )) as Wasm;
-    await wasm.default({ module_or_path: WASM_BIN });
-    return wasm;
-  })();
-  return wasmReady;
-}
-
-function placeLabels(game: Game, spans: (HTMLSpanElement | null)[]) {
-  const points = game.labels();
-  spans.forEach((span, i) => {
-    if (!span) return;
-    const [x, y] = [points[2 * i], points[2 * i + 1]];
-    // NaN: the clue is in a peeled layer.
-    span.style.display = Number.isNaN(x) ? "none" : "";
-    span.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
-  });
-}
 
 /** Solve time as m:ss. */
 function formatTime(ms: number): string {
@@ -61,15 +30,11 @@ export function Cube({
   mode: "play" | "answer";
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const labelRefs = useRef<(HTMLSpanElement | null)[]>([]);
-  const gameRef = useRef<Game | null>(null);
-  const rafRef = useRef(0);
-  const lastRef = useRef(0);
+  const boardRef = useRef<Board | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [clock, setClock] = useState<Clock | null>(null);
   const [now, setNow] = useState(0);
-  const [modeLine, setModeLine] = useState("");
 
   // Ticks the visible timer once a second while it runs.
   useEffect(() => {
@@ -78,179 +43,64 @@ export function Cube({
     return () => clearInterval(id);
   }, [clock]);
 
-  // Draws on animation frames until the tweens settle; no frames while idle.
-  const animate = useCallback((game: Game) => {
-    if (rafRef.current) return;
-    const frame = (t: number) => {
-      const dt = lastRef.current ? t - lastRef.current : 0;
-      lastRef.current = t;
-      const more = game.tick(dt);
-      game.render();
-      rafRef.current = more ? requestAnimationFrame(frame) : 0;
-      if (!more) lastRef.current = 0;
-    };
-    rafRef.current = requestAnimationFrame(frame);
-  }, []);
-
-  const refresh = useCallback(
-    (game: Game, boardChanged: boolean) => {
-      placeLabels(game, labelRefs.current);
-      if (boardChanged) {
-        const solved = game.is_solved();
-        setStatus({
-          boxes: game.box_count(),
-          wrong: game.wrong_count(),
-          solved,
-        });
-        const t = performance.now();
-        setClock((c) => (c && c.end === null && solved ? { ...c, end: t } : c));
-      }
-      animate(game);
-    },
-    [animate],
-  );
-
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let cancelled = false;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(canvas.clientWidth * dpr);
-    canvas.height = Math.round(canvas.clientHeight * dpr);
-    loadWasm()
-      .then((wasm) => {
-        if (cancelled) return;
-        const game = new wasm.Game(
-          canvas,
-          JSON.stringify(puzzle),
-          mode === "answer",
+    // A functional update, so a burst of events faster than renders can't restart it.
+    const startClock = () => {
+      const t = performance.now();
+      setClock((c) => c ?? { start: t, end: null });
+      setNow((n) => n || t);
+    };
+    mountBoard(canvas, puzzle, {
+      answer: mode === "answer",
+      onStatus: (s) => {
+        setStatus(s);
+        const t = performance.now();
+        setClock((c) =>
+          c && c.end === null && s.solved ? { ...c, end: t } : c,
         );
-        gameRef.current = game;
-        refresh(game, true);
+      },
+      onPlay: startClock,
+    })
+      .then((board) => {
+        if (cancelled) board.destroy();
+        else boardRef.current = board;
       })
       .catch((e: unknown) => {
         console.error(e);
         setError(String(e));
       });
-    // Wheel and trackpad pinch (ctrl+wheel) zoom; at either end the page scrolls instead.
-    const onWheel = (e: WheelEvent) => {
-      const game = gameRef.current;
-      const speed = e.ctrlKey ? 0.01 : 0.0015;
-      if (!game || !game.zoom_by(-e.deltaY * speed)) return;
-      e.preventDefault();
-      refresh(game, false);
-    };
-    canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       cancelled = true;
-      canvas.removeEventListener("wheel", onWheel);
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = 0;
-      gameRef.current?.free();
-      gameRef.current = null;
+      boardRef.current?.destroy();
+      boardRef.current = null;
     };
-  }, [puzzle, mode, refresh]);
+  }, [puzzle, mode]);
 
-  // A functional update, so a burst of events faster than renders can't restart it.
-  const startClock = () => {
-    const t = performance.now();
-    setClock((c) => c ?? { start: t, end: null });
-    setNow((n) => n || t);
-  };
   const reset = () => {
-    const game = gameRef.current;
-    if (!game) return;
-    game.reset();
+    boardRef.current?.reset();
     setClock(null);
-    refresh(game, true);
   };
-  const point = (e: PointerEvent<HTMLCanvasElement>) =>
-    [e.nativeEvent.offsetX, e.nativeEvent.offsetY] as const;
 
   return (
     <div>
-      <div className="relative aspect-square w-full overflow-hidden bg-black sm:aspect-auto sm:h-[min(80vh,720px)]">
+      {/* font-mono: the board's clue labels and mode line take the font of this box. */}
+      <div className="relative aspect-square w-full overflow-hidden bg-black font-mono sm:aspect-auto sm:h-[min(80vh,720px)]">
         <canvas
           ref={canvasRef}
           className="h-full w-full cursor-grab touch-none outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-inset"
           tabIndex={0}
           aria-label="3D puzzle board. Arrow keys move a cursor, Shift with up and down changes layer, Space builds a box, Delete removes one."
-          onKeyDown={(e) => {
-            const game = gameRef.current;
-            if (!game || e.metaKey || e.ctrlKey || e.altKey) return;
-            if (!game.key(e.key, e.shiftKey)) return;
-            e.preventDefault();
-            startClock();
-            setModeLine(game.mode_line());
-            refresh(game, true);
-          }}
-          onFocus={(e) => {
-            const game = gameRef.current;
-            if (!game) return;
-            game.set_cursor_visible(e.currentTarget.matches(":focus-visible"));
-            refresh(game, false);
-          }}
-          onBlur={() => {
-            const game = gameRef.current;
-            if (!game) return;
-            game.set_cursor_visible(false);
-            refresh(game, false);
-          }}
-          onPointerDown={(e) => {
-            const game = gameRef.current;
-            if (!game) return;
-            e.currentTarget.setPointerCapture(e.pointerId);
-            if (game.pointer_down(...point(e))) startClock();
-            refresh(game, false);
-          }}
-          onPointerMove={(e) => {
-            const game = gameRef.current;
-            if (!game) return;
-            if (game.pointer_move(...point(e), e.timeStamp))
-              refresh(game, false);
-            e.currentTarget.style.cursor = game.hovering() ? "pointer" : "";
-          }}
-          onPointerUp={(e) => {
-            const game = gameRef.current;
-            if (!game) return;
-            refresh(game, game.pointer_up(...point(e)));
-            e.currentTarget.style.cursor = game.hovering() ? "pointer" : "";
-          }}
-          onPointerLeave={() => {
-            const game = gameRef.current;
-            if (game && game.pointer_leave()) refresh(game, false);
-          }}
-          onPointerCancel={() => {
-            const game = gameRef.current;
-            if (!game) return;
-            game.pointer_cancel();
-            refresh(game, false);
-          }}
         />
-        {puzzle.clues.map((clue, i) => (
-          <span
-            key={i}
-            ref={(el) => {
-              labelRefs.current[i] = el;
-            }}
-            className="pointer-events-none absolute top-0 left-0 rounded-sm px-1 font-mono text-sm font-semibold text-black"
-            style={{ display: "none", background: clueColor(i) }}
-          >
-            {clueText(clue)}
-          </span>
-        ))}
-        {modeLine && (
-          <p className="pointer-events-none absolute bottom-3 left-4 font-mono text-sm text-zinc-300">
-            {modeLine}
-          </p>
-        )}
         {status === null && !error && (
-          <p className="absolute inset-0 grid place-items-center text-sm text-zinc-400">
+          <p className="absolute inset-0 grid place-items-center font-sans text-sm text-zinc-400">
             Loading 3D board…
           </p>
         )}
         {error && (
-          <p className="absolute inset-0 grid place-items-center p-6 text-center text-red-400">
+          <p className="absolute inset-0 grid place-items-center p-6 text-center font-sans text-red-400">
             The 3D board could not start ({error}). The layer grids below still
             work.
           </p>

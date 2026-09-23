@@ -29,14 +29,6 @@ impl Anim {
         }
     }
 
-    pub fn settled(pose: Pose) -> Self {
-        Self {
-            from: pose,
-            to: pose,
-            t_ms: DURATION_MS,
-        }
-    }
-
     /// Head for `to`, starting from wherever the tween is now.
     pub fn retarget(&mut self, to: Pose) {
         *self = Self::new(self.pose(), to);
@@ -103,12 +95,5 @@ mod tests {
         assert_eq!(a.pose(), before);
         assert!(!a.tick(DURATION_MS));
         assert_eq!(a.pose(), pose(1.0, 0.0));
-    }
-
-    #[test]
-    fn settled_is_done_at_once() {
-        let a = Anim::settled(pose(2.0, 0.5));
-        assert!(a.done());
-        assert_eq!(a.pose(), pose(2.0, 0.5));
     }
 }
