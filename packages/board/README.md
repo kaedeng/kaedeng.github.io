@@ -25,7 +25,7 @@ Needs Rust with the `wasm32-unknown-unknown` target, and wasm-pack.
 import { mountBoard } from "patches-board";
 
 const board = await mountBoard(canvas, puzzle, {
-  onStatus: ({ boxes, wrong, solved }) => {}, // on mount and after every change
+  onStatus: ({ boxes, wrong, locked, solved }) => {}, // on mount and after every change
   onPlay: () => {}, // every press on a cell or board key, e.g. to start a timer
   onView: (flat) => {}, // the camera turned, or switched between 3D and a 2D layer
 });
@@ -39,11 +39,11 @@ For a demo that plays the board itself:
 board.pointer("down", x, y, time); // also "move", "up", "leave", "cancel": the canvas's own handlers
 board.cellPoint([0, 3, 3]); // [x, y] of a cell's centre on the canvas, or null while its layer is hidden
 board.nearestFace(); // the view-cube face turned most toward the viewer: aim at its rect, then click() it
-const before = board.boxes(); // [{ min, max }, ...]
+const before = board.boxes(); // [{ min, max, locked }, ...]
 board.setBoxes(before); // puts the boxes back afterwards
 ```
 
-Coordinates are CSS px from the canvas's top-left, and `time` is in ms like `event.timeStamp`. A drag that rests within 5 px for 400 ms keeps the cell under it, so a demo drag should keep moving.
+Coordinates are CSS px from the canvas's top-left, and `time` is in ms like `event.timeStamp`. A drag that rests within 5 px for 400 ms keeps the cell under it, so a demo drag should keep moving. A press held still on a box for 500 ms locks or unlocks it, as a right-click does, so a demo click should let go sooner.
 
 - `puzzle` is the JSON printed by `cargo run -p patches-core --bin generate -- <id>` (type `Puzzle`). An id is a seed, plus `-easy` or `-hard` for those levels (`a3f9c1-hard`); a bare seed is Medium.
 - `answer: true` shows the stored solution; the cube still turns and zooms.

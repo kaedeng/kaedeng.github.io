@@ -9,6 +9,13 @@ test("placing and removing a box count against the boxes before", () => {
   assert.equal(reached("remove", { boxes: 2, solved: false }, 1), false);
 });
 
+test("locking a box counts against the locked boxes before", () => {
+  const one = { boxes: 1, locked: 1, solved: false };
+  assert.equal(reached("lock", one, 1, 0), true);
+  assert.equal(reached("lock", { ...one, locked: 0 }, 1, 1), false);
+  assert.equal(reached("lock", { flat: false }, 1, 0), false);
+});
+
 test("turning is any move in 3D; the flat view needs 2D", () => {
   assert.equal(reached("turn", { flat: false }, 0), true);
   assert.equal(reached("turn", { flat: true }, 0), false);

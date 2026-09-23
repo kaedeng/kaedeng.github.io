@@ -37,12 +37,14 @@ pub fn fault(clues: &[Clue], candidate: &BoxRegion) -> Option<Rejection> {
 }
 
 /// A player's in-progress tiling. Boxes may break the rules (they show as wrong); they may
-/// not overlap.
+/// not overlap. The player can lock a box so nothing changes it by mistake.
 #[derive(Clone, Debug)]
 pub struct Board {
     clues: Vec<Clue>,
     boxes: Vec<BoxRegion>,
     placed: u64,
+    /// The cells of the locked boxes.
+    locked: u64,
 }
 
 impl Board {
@@ -51,6 +53,7 @@ impl Board {
             clues,
             boxes: Vec::new(),
             placed: 0,
+            locked: 0,
         }
     }
 
@@ -91,8 +94,43 @@ impl Board {
             return false;
         };
         self.placed &= !self.boxes[i].mask();
+        self.locked &= !self.boxes[i].mask();
         self.boxes.remove(i);
         true
+    }
+
+    /// Locks placed box `b`, or unlocks it.
+    pub fn lock(&mut self, b: &BoxRegion, on: bool) {
+        if on {
+            self.locked |= b.mask();
+        } else {
+            self.locked &= !b.mask();
+        }
+    }
+
+    pub fn is_locked(&self, b: &BoxRegion) -> bool {
+        b.mask() & self.locked != 0
+    }
+
+    /// What box `b` becomes when it takes in every placed box it cuts into, growing until
+    /// it cuts none, and the boxes it takes in; `None` when that would take in a locked box.
+    pub fn join(&self, b: BoxRegion) -> Option<(BoxRegion, Vec<BoxRegion>)> {
+        let mut joined = b;
+        loop {
+            let cut: Vec<BoxRegion> = self
+                .boxes
+                .iter()
+                .filter(|o| o.mask() & joined.mask() != 0)
+                .copied()
+                .collect();
+            let grown = cut
+                .iter()
+                .fold(joined, |j, o| j.including(o.min).including(o.max));
+            if grown == joined {
+                return (!cut.iter().any(|o| self.is_locked(o))).then_some((joined, cut));
+            }
+            joined = grown;
+        }
     }
 
     /// Swaps placed box `old` for `new`, keeping `old` if `new` would overlap another box.
@@ -106,6 +144,7 @@ impl Board {
     pub fn clear(&mut self) {
         self.boxes.clear();
         self.placed = 0;
+        self.locked = 0;
     }
 
     /// Every cell covered, and no box breaks a rule.
@@ -248,6 +287,57 @@ mod tests {
         let everything = BoxRegion::spanning([0, 0, 0], [3, 3, 3]);
         assert_eq!(b.replace(bigger, everything), Err(Rejection::Overlap));
         assert_eq!(b.boxes(), &[other, bigger]);
+    }
+
+    #[test]
+    fn join_swallows_every_box_it_cuts_into_until_it_cuts_none() {
+        let mut b = Board::new(slab_clues());
+        let side = BoxRegion::spanning([1, 0, 0], [1, 1, 0]);
+        let behind = BoxRegion::spanning([0, 1, 0], [0, 1, 1]);
+        let far = BoxRegion::spanning([2, 0, 0], [3, 3, 3]);
+        for r in [side, behind, far] {
+            b.place(r).unwrap();
+        }
+        let drag = BoxRegion::spanning([0, 0, 0], [1, 0, 0]);
+        // Taking in `side` grows it to reach `behind`, which grows it a layer deeper.
+        assert_eq!(
+            b.join(drag),
+            Some((
+                BoxRegion::spanning([0, 0, 0], [1, 1, 1]),
+                vec![side, behind]
+            ))
+        );
+        let clear = BoxRegion::spanning([0, 3, 0], [1, 3, 1]);
+        assert_eq!(b.join(clear), Some((clear, vec![])));
+    }
+
+    #[test]
+    fn join_refuses_to_take_in_a_locked_box() {
+        let mut b = Board::new(slab_clues());
+        let side = BoxRegion::spanning([1, 0, 0], [1, 1, 0]);
+        let behind = BoxRegion::spanning([0, 1, 0], [0, 1, 1]);
+        b.place(side).unwrap();
+        b.place(behind).unwrap();
+        b.lock(&behind, true);
+        assert!(b.is_locked(&behind));
+        assert!(!b.is_locked(&side));
+        assert_eq!(b.join(BoxRegion::spanning([0, 0, 0], [1, 0, 0])), None);
+        b.lock(&behind, false);
+        assert!(!b.is_locked(&behind));
+    }
+
+    #[test]
+    fn removing_or_clearing_a_box_drops_its_lock() {
+        let mut b = Board::new(slab_clues());
+        b.place(slab(0)).unwrap();
+        b.lock(&slab(0), true);
+        b.remove_at([0, 0, 0]);
+        b.place(slab(0)).unwrap();
+        assert!(!b.is_locked(&slab(0)));
+        b.lock(&slab(0), true);
+        b.clear();
+        b.place(slab(0)).unwrap();
+        assert!(!b.is_locked(&slab(0)));
     }
 
     #[test]

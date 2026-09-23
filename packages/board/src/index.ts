@@ -16,8 +16,19 @@ import {
 
 export * from "./puzzle.js";
 
-/** Boxes that keep every rule, boxes that break one, and whether the puzzle is solved. */
-export type Status = { boxes: number; wrong: number; solved: boolean };
+/**
+ * Boxes that keep every rule, boxes that break one, how many boxes are locked, and whether
+ * the puzzle is solved.
+ */
+export type Status = {
+  boxes: number;
+  wrong: number;
+  locked: number;
+  solved: boolean;
+};
+
+/** A box on the board, and whether the player locked it. */
+export type PlacedBox = Box & { locked: boolean };
 
 export type BoardOptions = {
   /** Show the stored solution; the cube still turns and zooms but takes no boxes. */
@@ -45,9 +56,9 @@ export type Board = {
   /** The view-cube face turned most toward the viewer, e.g. for a demo to click. */
   nearestFace(): HTMLButtonElement;
   /** The placed boxes. */
-  boxes(): Box[];
+  boxes(): PlacedBox[];
   /** Puts the placed boxes back to `boxes`, e.g. after a demo, and calls `onStatus`. */
-  setBoxes(boxes: Box[]): void;
+  setBoxes(boxes: PlacedBox[]): void;
 };
 
 /** The pointer events `Board.pointer` takes, after `pointerdown` and so on. */
@@ -59,9 +70,20 @@ type Pointer = Record<
   (x: number, y: number, time: number) => void
 >;
 
+/** How long (ms) a press held still on a box takes to lock or unlock it. */
+const HOLD_MS = 500;
+
+/** A padlock, drawn in the colour of the element it is in. */
+const LOCK_SVG =
+  '<svg viewBox="0 0 16 16" width="100%" height="100%" aria-hidden="true">' +
+  '<path d="M5 7.5V5a3 3 0 0 1 6 0v2.5" fill="none" stroke="currentColor" stroke-width="2"/>' +
+  '<rect x="2.5" y="7" width="11" height="8" rx="1.5" fill="currentColor"/></svg>';
+
 type Overlay = {
   root: HTMLDivElement;
   labels: HTMLSpanElement[];
+  /** One padlock per locked box in view, made as needed; the spare ones are hidden. */
+  locks: HTMLSpanElement[];
   modeLine: HTMLParagraphElement;
   /** Turns with the camera; clicking a face shows one layer face-on. */
   viewCube: HTMLDivElement;
@@ -158,6 +180,7 @@ export async function mountBoard(
   };
   const refresh = (boardChanged: boolean) => {
     placeLabels(game, overlay.labels);
+    placeLocks(game, overlay, canvas.clientWidth);
     showView(game, overlay, puzzle.size);
     const now = `${game.view_angles()} ${game.view_depth()}`;
     if (view && now !== view) options.onView?.(game.view_depth() >= 0);
@@ -166,6 +189,7 @@ export async function mountBoard(
       options.onStatus?.({
         boxes: game.box_count(),
         wrong: game.wrong_count(),
+        locked: game.locked_count(),
         solved: game.is_solved(),
       });
     }
@@ -213,6 +237,7 @@ export async function mountBoard(
       refresh(true);
     },
     destroy() {
+      pointer.stop();
       resized.disconnect();
       for (const [type, fn] of listeners) canvas.removeEventListener(type, fn);
       cancelAnimationFrame(raf);
@@ -235,32 +260,42 @@ export async function mountBoard(
     },
     boxes() {
       const flat = [...game.boxes()];
-      return Array.from({ length: flat.length / 6 }, (_, i) => {
-        const [x0, y0, z0, x1, y1, z1] = flat.slice(6 * i, 6 * i + 6);
-        return { min: [x0, y0, z0], max: [x1, y1, z1] };
+      return Array.from({ length: flat.length / 7 }, (_, i) => {
+        const [x0, y0, z0, x1, y1, z1, locked] = flat.slice(7 * i, 7 * i + 7);
+        return { min: [x0, y0, z0], max: [x1, y1, z1], locked: locked === 1 };
       });
     },
     setBoxes(boxes) {
       game.set_boxes(
-        new Uint8Array(boxes.flatMap((b) => [...b.min, ...b.max])),
+        new Uint8Array(
+          boxes.flatMap((b) => [...b.min, ...b.max, Number(b.locked)]),
+        ),
       );
       refresh(true);
     },
   };
 }
 
+/** The pointer handlers, and `stop`, which drops a hold still timing, e.g. on destroy. */
 function pointerHandlers(
   canvas: HTMLCanvasElement,
   game: Game,
   refresh: (boardChanged: boolean) => void,
   options: BoardOptions,
-): Pointer {
+): Pointer & { stop: () => void } {
   const showHover = () => {
     canvas.style.cursor = game.hovering() ? "pointer" : "";
   };
+  // A press held still on a box locks or unlocks it once this goes off.
+  let hold = 0;
+  const stop = () => clearTimeout(hold);
   return {
     down: (x, y) => {
       if (game.pointer_down(x, y)) options.onPlay?.();
+      stop();
+      hold = window.setTimeout(() => {
+        if (game.pointer_hold()) refresh(true);
+      }, HOLD_MS);
       refresh(false);
     },
     move: (x, y, time) => {
@@ -268,6 +303,7 @@ function pointerHandlers(
       showHover();
     },
     up: (x, y) => {
+      stop();
       refresh(game.pointer_up(x, y));
       showHover();
     },
@@ -275,9 +311,11 @@ function pointerHandlers(
       if (game.pointer_leave()) refresh(false);
     },
     cancel: () => {
+      stop();
       game.pointer_cancel();
       refresh(false);
     },
+    stop,
   };
 }
 
@@ -317,7 +355,16 @@ function inputListeners(
       game.set_cursor_visible(false);
       refresh(false);
     },
+    // The board's own right-click and long press take the place of the page's menu.
+    contextmenu: (e) => e.preventDefault(),
     pointerdown: (e) => {
+      // A right-click locks or unlocks the box under it, and is no press.
+      if (e.button === 2) {
+        if (!game.toggle_lock(e.offsetX, e.offsetY)) return;
+        options.onPlay?.();
+        refresh(true);
+        return;
+      }
       canvas.setPointerCapture(e.pointerId);
       const what = fingers.down(e.pointerId, e.offsetX, e.offsetY);
       if (what === "press") pointer.down(...point(e));
@@ -407,6 +454,7 @@ function createOverlay(puzzle: Puzzle, colors: string[]): Overlay {
   return {
     root,
     labels,
+    locks: [],
     modeLine,
     viewCube,
     viewBox: box,
@@ -482,6 +530,32 @@ function showView(game: Game, overlay: Overlay, size: number) {
   for (const b of [overlay.nearer, overlay.deeper]) {
     b.style.opacity = b.disabled ? "0.35" : "";
   }
+}
+
+/**
+ * A padlock on each locked box in view, sized like the labels on a board `width` px wide;
+ * none where another box covers any of it.
+ */
+function placeLocks(game: Game, overlay: Overlay, width: number) {
+  const size = labelFont(width) * 1.6;
+  const locks = game.locks(size / 2);
+  const count = locks.length / 3;
+  while (overlay.locks.length < count) {
+    const span = document.createElement("span");
+    span.style.cssText = "position:absolute;top:0;left:0";
+    span.innerHTML = LOCK_SVG;
+    overlay.locks.push(span);
+    // Under the labels, so a clue's number stays readable.
+    overlay.root.prepend(span);
+  }
+  overlay.locks.forEach((span, i) => {
+    span.style.display = i < count ? "" : "none";
+    if (i >= count) return;
+    const [x, y, rgb] = locks.slice(3 * i, 3 * i + 3);
+    span.style.width = span.style.height = `${size}px`;
+    span.style.color = `#${rgb.toString(16).padStart(6, "0")}`;
+    span.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px)`;
+  });
 }
 
 function placeLabels(game: Game, spans: HTMLSpanElement[]) {

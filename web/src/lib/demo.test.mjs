@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { canDemo, demoScript, MAX_FRAME, pointAt } from "./demo.ts";
 
-const TOP = { min: [0, 3, 0], max: [3, 3, 3] };
+const TOP = { min: [0, 3, 0], max: [3, 3, 3], locked: false };
 
 /** Each press in `script`: where the ghost pressed, and where it glided while down. */
 function presses(script) {
@@ -19,6 +19,20 @@ function presses(script) {
   return out;
 }
 
+/** How long (ms) each press in `script` stays down. */
+function held(script) {
+  const out = [];
+  let ms = null;
+  for (const a of script) {
+    if (a.down === true) ms = 0;
+    if ("wait" in a && ms !== null) ms += a.wait;
+    if ("to" in a && ms !== null) ms += a.ms;
+    if (a.down === false) out.push(ms);
+    if (a.down === false) ms = null;
+  }
+  return out;
+}
+
 /** The glides made while the ghost is down, i.e. its drags. */
 function drags(script) {
   let down = false;
@@ -29,7 +43,7 @@ function drags(script) {
 }
 
 test("every practice move but solving has a demo", () => {
-  for (const goal of ["place", "remove", "turn", "flat"]) {
+  for (const goal of ["place", "remove", "lock", "turn", "flat"]) {
     assert.equal(canDemo(goal), true, goal);
   }
   assert.equal(canDemo("solve"), false);
@@ -49,11 +63,35 @@ test("building uses the highest layer no box reaches into", () => {
   ]);
 });
 
-test("removing clicks the last box placed", () => {
-  const low = { min: [0, 0, 0], max: [3, 0, 3] };
+test("removing clicks the last box placed that is not locked", () => {
+  const low = { min: [0, 0, 0], max: [3, 0, 3], locked: false };
   assert.deepEqual(presses(demoScript("remove", [low, TOP])), [
     { at: { cell: [3, 3, 3] }, path: [] },
   ]);
+  const locked = { ...TOP, locked: true };
+  assert.deepEqual(presses(demoScript("remove", [low, locked])), [
+    { at: { cell: [3, 0, 3] }, path: [] },
+  ]);
+});
+
+test("locking holds still on the last box placed that is not locked", () => {
+  const low = { min: [0, 0, 0], max: [3, 0, 3], locked: false };
+  const script = demoScript("lock", [low, { ...TOP, locked: true }]);
+  assert.deepEqual(presses(script), [{ at: { cell: [3, 0, 3] }, path: [] }]);
+});
+
+test("locking with no box builds one first, then holds still on it", () => {
+  assert.deepEqual(presses(demoScript("lock", [])), [
+    { at: { cell: [0, 3, 3] }, path: [{ cell: [3, 3, 0] }] },
+    { at: { cell: [3, 3, 3] }, path: [] },
+  ]);
+});
+
+test("a hold outlasts the board's 500 ms to lock; a click lets go well before", () => {
+  const [hold] = held(demoScript("lock", [TOP]));
+  assert.ok(hold >= 700, `hold: ${hold}`);
+  const [click] = held(demoScript("remove", [TOP]));
+  assert.ok(click <= 250, `click: ${click}`);
 });
 
 test("removing with no box builds one first, then clicks it", () => {
@@ -83,7 +121,7 @@ test("the flat view clicks the nearest view-cube face, then clicks it again", ()
 });
 
 test("every drag takes 1 to 2 s, slow enough to follow", () => {
-  for (const goal of ["place", "remove", "turn"]) {
+  for (const goal of ["place", "remove", "lock", "turn"]) {
     for (const drag of drags(demoScript(goal, []))) {
       assert.ok(drag.ms >= 1000 && drag.ms <= 2000, `${goal}: ${drag.ms}`);
     }
@@ -114,7 +152,7 @@ function rests(points) {
 }
 
 test("a drag keeps moving, so it never rests on a cell it passes", () => {
-  for (const goal of ["place", "remove"]) {
+  for (const goal of ["place", "remove", "lock"]) {
     for (const drag of drags(demoScript(goal, []))) {
       // Shorter than any corner-to-corner drag, at 60 fps and at the longest frame.
       for (const frame of [1000 / 60, MAX_FRAME]) {

@@ -40,8 +40,14 @@ const STEPS: Step[] = [
   {
     title: "Remove it",
     goal: "remove",
-    body: "Dragging from a box grows it instead of removing it.",
+    body: "Dragging from a box grows it instead, and growing it into another box joins the two.",
     turn: "click a box to remove it.",
+  },
+  {
+    title: "Lock a box",
+    goal: "lock",
+    body: "Clicks and drags go through a locked box to the box behind it, so nothing removes or joins it by mistake. Do it again to unlock it.",
+    turn: "right-click a box, or press and hold it. No box? Build one first.",
   },
   {
     title: "Turn the cube",
@@ -106,6 +112,7 @@ export function Tutorial() {
   const [step, setStep] = useState(0);
   const [done, setDone] = useState(false);
   const boxes = useRef(0);
+  const locked = useRef(0);
   const board = useRef<Board | null>(null);
   const ghost = useRef<HTMLDivElement>(null);
   // Set while a demo plays: stops it.
@@ -146,10 +153,11 @@ export function Tutorial() {
   };
   const onEvent = (e: BoardEvent) => {
     // What a demo does on the board is not the player's move.
-    if (goal && !done && !stopDemo.current && reached(goal, e, boxes.current)) {
+    const before = [boxes.current, locked.current] as const;
+    if (goal && !done && !stopDemo.current && reached(goal, e, ...before)) {
       setDone(true);
     }
-    if ("boxes" in e) boxes.current = e.boxes;
+    if ("boxes" in e) [boxes.current, locked.current] = [e.boxes, e.locked];
   };
   // Pressed again while the demo plays, it stops it.
   const showMe = () => {
@@ -314,7 +322,12 @@ function PracticeBoard({
     let board: Board | null = null;
     let cancelled = false;
     mountBoard(canvas, PRACTICE, {
-      onStatus: (s) => report({ boxes: s.boxes + s.wrong, solved: s.solved }),
+      onStatus: (s) =>
+        report({
+          boxes: s.boxes + s.wrong,
+          locked: s.locked,
+          solved: s.solved,
+        }),
       onView: (flat) => report({ flat }),
     })
       .then((b) => {
@@ -386,8 +399,9 @@ function Tips() {
         box another way.
       </li>
       <li>
-        Or click one cell, then another. In the flat view, change layer between
-        the clicks to build through several layers.
+        Or click one cell, then another; a second click on a box joins it. In
+        the flat view, change layer between the clicks to build through several
+        layers.
       </li>
       <li>
         Keyboard: Tab to the board. Arrows move, Shift+↑/↓ changes layer, Space

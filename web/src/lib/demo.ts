@@ -1,4 +1,4 @@
-import type { Box, Cell } from "patches-board";
+import type { Cell, PlacedBox } from "patches-board";
 import type { Goal } from "./tutorial";
 
 /**
@@ -37,19 +37,18 @@ const TAP: Action[] = [
   { down: false },
 ];
 
-const SCRIPTS: Record<DemoGoal, (boxes: Box[]) => Action[]> = {
+/** Press where the ghost is, and hold still well past the board's 500 ms to lock. */
+const HOLD: Action[] = [
+  { wait: 250 },
+  { down: true },
+  { wait: 900 },
+  { down: false },
+];
+
+const SCRIPTS: Record<DemoGoal, (boxes: PlacedBox[]) => Action[]> = {
   place: (boxes) => [...build(freeLayer(boxes)), { wait: 1200 }],
-  remove: (boxes) => {
-    const box = boxes.at(-1);
-    if (box) return [...click(box.max), { wait: 1000 }];
-    const y = freeLayer(boxes);
-    return [
-      ...build(y),
-      { wait: 700 },
-      ...click([TOP, y, TOP]),
-      { wait: 1000 },
-    ];
-  },
+  remove: (boxes) => onLastBox(boxes, click),
+  lock: (boxes) => onLastBox(boxes, hold),
   // One way and back: the cube ends up as it was.
   turn: () => [
     { to: { at: [0.12, 0.86] }, ms: 900 },
@@ -80,7 +79,7 @@ export function canDemo(goal: Goal | undefined): goal is DemoGoal {
 }
 
 /** The ghost's moves showing `goal` on a board holding `boxes`. */
-export function demoScript(goal: DemoGoal, boxes: Box[]): Action[] {
+export function demoScript(goal: DemoGoal, boxes: PlacedBox[]): Action[] {
   return SCRIPTS[goal](boxes);
 }
 
@@ -114,8 +113,26 @@ function click(cell: Cell): Action[] {
   return [{ to: { cell }, ms: 800 }, ...TAP];
 }
 
+function hold(cell: Cell): Action[] {
+  return [{ to: { cell }, ms: 800 }, ...HOLD];
+}
+
+/**
+ * `act` on a corner of the last box placed that is not locked, since a locked one takes
+ * no clicks; with no such box, builds one first.
+ */
+function onLastBox(
+  boxes: PlacedBox[],
+  act: (cell: Cell) => Action[],
+): Action[] {
+  const box = boxes.filter((b) => !b.locked).at(-1);
+  if (box) return [...act(box.max), { wait: 1000 }];
+  const y = freeLayer(boxes);
+  return [...build(y), { wait: 700 }, ...act([TOP, y, TOP]), { wait: 1000 }];
+}
+
 /** The highest flat layer no box reaches into; the top one when every layer has a box. */
-function freeLayer(boxes: Box[]): number {
+function freeLayer(boxes: PlacedBox[]): number {
   for (let y = TOP; y >= 0; y--) {
     if (!boxes.some((b) => b.min[1] <= y && y <= b.max[1])) return y;
   }

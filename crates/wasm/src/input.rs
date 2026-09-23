@@ -1,5 +1,6 @@
 //! The pointer state machine: turns presses, moves and releases into orbits, previews and
-//! box placements. Coordinates are CSS px; the renderer resolves what is under the pointer.
+//! box placements, and ends a press held still, so it can lock a box. Coordinates are CSS
+//! px; the renderer resolves what is under the pointer and times the hold.
 
 use patches_core::{BoxRegion, Cell};
 
@@ -19,6 +20,9 @@ pub enum Target {
     Empty(Cell),
     /// A cell of this placed box.
     Block(BoxRegion),
+    /// A locked box with no open box behind it: the pointer passes through locked boxes,
+    /// so this is all it found.
+    Locked,
 }
 
 #[derive(Debug, PartialEq)]
@@ -60,6 +64,9 @@ enum Mode {
         block: BoxRegion,
         extent: BoxRegion,
     },
+    /// Pressed on a locked box with nothing behind it: a drag turns the cube, a click does
+    /// nothing.
+    Locked,
 }
 
 /// Where a drag last came to a stop.
@@ -114,6 +121,7 @@ impl Input {
                 block: region,
                 extent: region,
             },
+            Target::Locked => Mode::Locked,
         };
         self.press = Some(Press {
             start: at,
@@ -137,7 +145,28 @@ impl Input {
     pub fn building(&self) -> bool {
         self.press
             .as_ref()
-            .is_some_and(|p| !matches!(p.mode, Mode::Orbit))
+            .is_some_and(|p| !matches!(p.mode, Mode::Orbit | Mode::Locked))
+    }
+
+    /// Ends a press still held where it landed, e.g. to lock the box there instead.
+    /// Returns true when it did.
+    pub fn hold(&mut self) -> bool {
+        let still = self.press.as_ref().is_some_and(|p| !p.moved);
+        if still {
+            self.press = None;
+        }
+        still
+    }
+
+    /// The cell a build last reached: where it last hovered, else where it began. Letting
+    /// go over a locked box with nothing behind it finishes there.
+    pub fn hovered(&self) -> Option<Cell> {
+        let p = self.press.as_ref()?;
+        match p.mode {
+            Mode::Build { anchor, .. } => p.hover.or(Some(anchor)),
+            Mode::Extend { extent, .. } => p.hover.or(Some(extent.min)),
+            Mode::Orbit | Mode::Locked => None,
+        }
     }
 
     /// `hover` is the cell under the pointer, looked up only while building; off the cube it
@@ -150,8 +179,8 @@ impl Input {
         p.last = at;
         p.moved |= (at.0 - p.start.0).hypot(at.1 - p.start.1) >= CLICK_SLOP;
         let extent = match &mut p.mode {
-            Mode::Orbit if p.moved => return Moved::Orbit { dx, dy },
-            Mode::Orbit => return Moved::Nothing,
+            Mode::Orbit | Mode::Locked if p.moved => return Moved::Orbit { dx, dy },
+            Mode::Orbit | Mode::Locked => return Moved::Nothing,
             Mode::Build { extent, .. } | Mode::Extend { extent, .. } => extent,
         };
         if let Some(rested) = p.rest.follow(at, hover, now) {
@@ -185,7 +214,7 @@ impl Input {
                 })
             }
             // An orbit keeps a box half drawn, so click A / turn / click B still works.
-            (Mode::Orbit, true) => Released::Nothing,
+            (Mode::Orbit, true) | (Mode::Locked, _) => Released::Nothing,
             (Mode::Orbit, false) => Released::Cancel,
         }
     }
@@ -400,6 +429,67 @@ mod tests {
         input.down((0.0, 0.0), Target::Block(BLOCK));
         input.moved((20.0, 0.0), Some([2, 0, 0]), 0.0);
         assert_eq!(input.up(None), Released::Cancel);
+    }
+
+    #[test]
+    fn a_click_on_a_locked_box_with_nothing_behind_it_does_nothing() {
+        let mut input = Input::default();
+        assert_eq!(
+            click(&mut input, Target::Locked, Some(A)),
+            Released::Nothing
+        );
+    }
+
+    #[test]
+    fn a_drag_from_a_locked_box_with_nothing_behind_it_turns_the_cube() {
+        let mut input = Input::default();
+        input.down((10.0, 10.0), Target::Locked);
+        assert!(!input.building());
+        assert_eq!(
+            input.moved((30.0, 10.0), None, 0.0),
+            Moved::Orbit { dx: 20.0, dy: 0.0 }
+        );
+        assert_eq!(input.up(Some(A)), Released::Nothing);
+    }
+
+    #[test]
+    fn a_hold_ends_a_press_that_has_not_moved() {
+        for target in [Target::Block(BLOCK), Target::Locked, Target::Empty(A)] {
+            let mut input = Input::default();
+            input.down((0.0, 0.0), target);
+            input.moved((2.0, 1.0), Some(A), 300.0);
+            assert!(input.hold());
+            assert!(!input.pressed());
+            assert_eq!(input.up(Some(A)), Released::Nothing);
+        }
+    }
+
+    #[test]
+    fn a_hold_after_the_pointer_moved_leaves_the_press() {
+        let mut input = Input::default();
+        input.down((0.0, 0.0), Target::Block(BLOCK));
+        input.moved((20.0, 0.0), Some([2, 0, 0]), 0.0);
+        assert!(!input.hold());
+        assert!(input.pressed());
+        assert!(!Input::default().hold());
+    }
+
+    #[test]
+    fn a_drag_let_go_where_it_last_was_finishes_there() {
+        // Over a locked box with nothing behind it, the drag stays on the last cell it
+        // reached, and letting go there builds that box.
+        let mut input = Input::default();
+        input.down((0.0, 0.0), Target::Empty(A));
+        assert_eq!(input.hovered(), Some(A));
+        input.moved((20.0, 0.0), Some(B), 0.0);
+        input.moved((40.0, 0.0), None, 10.0);
+        assert_eq!(input.hovered(), Some(B));
+        let last = input.hovered();
+        assert_eq!(input.up(last), Released::Place(BoxRegion::spanning(A, B)));
+        input.down((0.0, 0.0), Target::Block(BLOCK));
+        assert_eq!(input.hovered(), Some(BLOCK.min));
+        input.down((0.0, 0.0), Target::Nothing);
+        assert_eq!(input.hovered(), None);
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! The 3D board: a white wireframe of the 4x4x4 cube, rendered with three-d on WebGL2.
 //! Each clue is a dashed marker in its box's shape, or a jack when any shape will do.
 //! Placed boxes are solid blocks in their clue's colour with darker edges, or red outlines
-//! when they break a rule, and tween in and out. JavaScript owns the canvas events and
-//! forwards them, and calls `tick` + `render` on animation frames only while something
-//! moves.
+//! when they break a rule, and tween in and out; a locked box has bolder edges. JavaScript
+//! owns the canvas events and forwards them, and calls `tick` + `render` on animation
+//! frames only while something moves.
 
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
@@ -15,13 +15,13 @@ use web_sys::HtmlCanvasElement;
 
 use crate::anim::Anim;
 use crate::geom::{
-    DASH_R, DOT_R, EDGE_R, JACK_R, OUTLINE_R, Pose, WHOLE, block_pose, box_edges, by_depth,
-    cell_center, clip, corners, cut_faces, dashed_edges, grid_lines, jack, marker_half,
-    marker_weight, nearness, peeled, region_edges,
+    DASH_R, DOT_R, EDGE_R, JACK_R, LOCKED_R, OUTLINE_R, Pose, WHOLE, block_pose, box_edges,
+    by_depth, cell_center, clip, corners, cut_faces, dashed_edges, faces_toward, grid_lines, jack,
+    marker_half, marker_weight, nearness, peeled, region_edges,
 };
 use crate::input::{Input, Moved, Released, Target};
 use crate::keys::{Cmd, Cursor, Dir, Keys, Press, axis_for};
-use crate::pick::{hidden, pick};
+use crate::pick::{Pick, covered, hidden, pick, pick_open};
 use crate::view::{Flat, facing, orbit};
 
 /// Close enough to fill the view, far enough that the whole cube fits from every angle
@@ -50,6 +50,15 @@ const PITCH_RANGE: (f32, f32) = (-1.5, 1.5);
 const WRONG: Srgba = Srgba::new_opaque(0xef, 0x44, 0x44);
 /// Brightness of a block's edges and section hatching against its colour.
 const DARKER: f32 = 0.6;
+/// Where rays test a padlock for cover, in half its side from its middle: the middle and
+/// the four corners.
+const PADLOCK_RAYS: [(f32, f32); 5] = [
+    (0.0, 0.0),
+    (-1.0, -1.0),
+    (1.0, -1.0),
+    (-1.0, 1.0),
+    (1.0, 1.0),
+];
 /// How far up the screen a clue's label sits from its cell's centre: still inside the
 /// cell, and in 2D clear of its marker.
 const LABEL_LIFT: f32 = 0.34;
@@ -140,6 +149,9 @@ pub struct Game {
     colors: Vec<Srgba>,
     board: Board,
     input: Input,
+    /// The box the press landed on as seen, locked or not: what holding it still locks or
+    /// unlocks.
+    held: Option<BoxRegion>,
     keys: Keys,
     /// The keyboard's cell, drawn as a white outline once the keyboard is in use.
     cursor: Cursor,
@@ -220,6 +232,7 @@ impl Game {
             puzzle,
             colors,
             input: Input::default(),
+            held: None,
             keys: Keys::default(),
             cursor: Cursor::new([N - 1; 3]),
             cursor_on: false,
@@ -317,28 +330,35 @@ impl Game {
         vec![axis as i32, i32::from(sign)]
     }
 
-    /// The placed boxes, six numbers each: `min`, then `max`.
+    /// The placed boxes, seven numbers each: `min`, `max`, then 1 when it is locked.
     pub fn boxes(&self) -> Vec<u8> {
         self.board
             .boxes()
             .iter()
-            .flat_map(|b| b.min.into_iter().chain(b.max))
+            .flat_map(|b| {
+                let locked = u8::from(self.board.is_locked(b));
+                b.min.into_iter().chain(b.max).chain([locked])
+            })
             .collect()
     }
 
-    /// Puts the placed boxes back to `boxes` (as `boxes` gives them), e.g. after a demo:
-    /// the others shrink away and the missing ones grow back. A solve this undoes is
-    /// undone too, so the board takes input again.
+    /// Puts the placed boxes and their locks back to `boxes` (as `boxes` gives them), e.g.
+    /// after a demo: the others shrink away and the missing ones grow back. A solve this
+    /// undoes is undone too, so the board takes input again.
     pub fn set_boxes(&mut self, boxes: &[u8]) {
-        let want: Vec<BoxRegion> = boxes
-            .as_chunks::<6>()
+        let locks: Vec<(BoxRegion, bool)> = boxes
+            .as_chunks::<7>()
             .0
             .iter()
-            .map(|b| BoxRegion {
-                min: [b[0], b[1], b[2]],
-                max: [b[3], b[4], b[5]],
+            .map(|b| {
+                let region = BoxRegion {
+                    min: [b[0], b[1], b[2]],
+                    max: [b[3], b[4], b[5]],
+                };
+                (region, b[6] == 1)
             })
             .collect();
+        let want: Vec<BoxRegion> = locks.iter().map(|&(b, _)| b).collect();
         let extra: Vec<BoxRegion> = self
             .board
             .boxes()
@@ -354,6 +374,9 @@ impl Game {
                 self.place(b);
             }
         }
+        for (b, on) in locks {
+            self.board.lock(&b, on);
+        }
         if self.solved && !self.board.is_solved() {
             self.solved = false;
             for b in self.blocks.iter_mut().filter(|b| !b.removing) {
@@ -366,12 +389,7 @@ impl Game {
     /// cell, so its label can hide; else 0.
     pub fn hidden_labels(&self) -> Vec<u8> {
         let eye: [f32; 3] = self.camera.position().into();
-        let solid: Vec<BoxRegion> = self
-            .blocks
-            .iter()
-            .filter(|b| !b.wrong && !b.removing)
-            .map(|b| b.region)
-            .collect();
+        let solid = self.solid();
         self.puzzle
             .clues
             .iter()
@@ -379,14 +397,35 @@ impl Game {
             .collect()
     }
 
+    /// Where each locked box shows a padlock: CSS px, then its colour as `0xRRGGBB` (black
+    /// like the labels' text, or a wrong box's red), flattened as `[x0, y0, color0, x1,
+    /// ...]`. A solid block wears it in the middle of the face most in view that nothing
+    /// covers; a wrong box, only an outline, in its middle. `half` is half the padlock's
+    /// side in CSS px. Padlocks out of sight are left out: in a peeled layer, opened up on
+    /// solving, or with any part of them behind another box.
+    pub fn locks(&self, half: f32) -> Vec<f32> {
+        if self.solved {
+            return Vec::new();
+        }
+        let solid = self.solid();
+        self.blocks
+            .iter()
+            .filter(|b| !b.removing && self.board.is_locked(&b.region))
+            .filter_map(|b| self.padlock(b, half, &solid))
+            .flatten()
+            .collect()
+    }
+
     /// Returns true when the press landed on a cell.
     pub fn pointer_down(&mut self, x: f32, y: f32) -> bool {
-        let target = self.target(x, y);
+        let under = self.under(x, y);
+        let target = self.target(under);
         self.input.down((x, y), target);
+        self.held = self.seen_box(x, y);
         self.set_hover(None);
         // The keyboard carries on from where the mouse pressed. A box half drawn stays, so
         // this click can finish it.
-        if let Some(c) = self.pick_cell(x, y) {
+        if let Pick::Cell(c) = under {
             self.cursor.cell = c;
             self.show_cursor();
             self.show_selection();
@@ -397,11 +436,11 @@ impl Game {
     /// `t` is the event's timestamp in ms. Returns true when the scene needs a redraw.
     pub fn pointer_move(&mut self, x: f32, y: f32, t: f64) -> bool {
         if !self.input.pressed() {
-            return self.set_hover(self.pick_cell(x, y));
+            return self.hover_at(x, y);
         }
         // Where the pointer is only matters while a build is being dragged.
         let hover = if self.input.building() {
-            self.pick_cell(x, y)
+            self.under(x, y).cell()
         } else {
             None
         };
@@ -414,17 +453,47 @@ impl Game {
                 true
             }
             Moved::Preview(r) => {
-                self.set_preview(Some(r));
+                self.set_preview(Some(self.joined(r)));
                 true
             }
             Moved::Nothing => false,
         }
     }
 
+    /// Locks or unlocks the box a press is still held on, ending the press; JavaScript calls
+    /// it once the press has been held long enough. Returns true when it did.
+    pub fn pointer_hold(&mut self) -> bool {
+        let Some(b) = self.held else {
+            return false;
+        };
+        if !self.input.hold() {
+            return false;
+        }
+        self.flip_lock(b);
+        true
+    }
+
+    /// Locks or unlocks the box the pointer (CSS px) is on as seen, e.g. on a right-click.
+    /// Returns true when there was one.
+    pub fn toggle_lock(&mut self, x: f32, y: f32) -> bool {
+        let Some(b) = self.seen_box(x, y) else {
+            return false;
+        };
+        self.flip_lock(b);
+        true
+    }
+
     /// Returns true when the board changed.
     pub fn pointer_up(&mut self, x: f32, y: f32) -> bool {
-        let released = match self.input.up(self.pick_cell(x, y)) {
+        // Over a locked box with nothing behind it, a drag ends where it last was.
+        let hover = match self.under(x, y) {
+            Pick::Locked => self.input.hovered(),
+            under => under.cell(),
+        };
+        let released = match self.input.up(hover) {
             Released::Tap(c) => self.cursor.tap(c),
+            // With a box half drawn, a click on a box finishes it there, taking that box in.
+            Released::Remove(_) if self.cursor.selecting() => self.cursor.select(None),
             Released::Cancel => {
                 self.cursor.cancel();
                 Released::Nothing
@@ -439,7 +508,7 @@ impl Game {
         };
         let changed = self.apply(released);
         self.show_selection();
-        self.set_hover(self.pick_cell(x, y));
+        self.hover_at(x, y);
         changed
     }
 
@@ -538,6 +607,15 @@ impl Game {
             .count() as u32
     }
 
+    /// Placed boxes that are locked.
+    pub fn locked_count(&self) -> u32 {
+        self.board
+            .boxes()
+            .iter()
+            .filter(|b| self.board.is_locked(b))
+            .count() as u32
+    }
+
     /// Placed boxes that break a rule.
     pub fn wrong_count(&self) -> u32 {
         self.blocks
@@ -577,14 +655,14 @@ impl Game {
         }
     }
 
-    /// Carries out a finished press or key command. A box that would overlap another is not
-    /// built; one that breaks a rule is built and shows as a red outline. Returns true when
-    /// the board changed.
+    /// Carries out a finished press or key command. A box takes in the boxes it cuts into,
+    /// and is not built when one of them is locked; one that breaks a rule is built and
+    /// shows as a red outline. Returns true when the board changed.
     fn apply(&mut self, released: Released) -> bool {
         let changed = match released {
-            Released::Place(r) => self.place(r),
+            Released::Place(r) => self.build(r, None),
             Released::Remove(r) => self.remove(r.min),
-            Released::Replace { old, new } => self.extend(old, new),
+            Released::Replace { old, new } => self.build(new, Some(old)),
             Released::Nothing | Released::Tap(_) | Released::Cancel => false,
         };
         if changed && self.playable && self.board.is_solved() {
@@ -613,18 +691,8 @@ impl Game {
         self.cursor_on = true;
         match cmd {
             Cmd::Move(dir, n) => self.move_cursor(dir, n as i8),
-            Cmd::Select => {
-                let block = self
-                    .board
-                    .box_at(self.cursor.cell)
-                    .map(|i| self.board.boxes()[i]);
-                let released = self.cursor.select(block);
-                self.apply(released);
-            }
-            Cmd::Remove => {
-                self.cursor.cancel();
-                self.remove(self.cursor.cell);
-            }
+            Cmd::Select => self.select(),
+            Cmd::Remove => self.delete(),
             Cmd::Cancel => self.cursor.cancel(),
             Cmd::Clue(d) => self.jump_to_clue(d),
             Cmd::Top => self.cursor.cell[1] = self.shown.max[1],
@@ -633,6 +701,28 @@ impl Game {
         }
         self.show_cursor();
         self.show_selection();
+    }
+
+    /// Space: starts a box at the cursor, or grows the box under it, or places the box being
+    /// drawn. A locked box under the cursor is not grown.
+    fn select(&mut self) {
+        let block = self.box_at(self.cursor.cell);
+        if block.is_some_and(|b| self.board.is_locked(&b)) && !self.cursor.selecting() {
+            return;
+        }
+        let released = self.cursor.select(block);
+        self.apply(released);
+    }
+
+    /// Delete: removes the box under the cursor unless it is locked.
+    fn delete(&mut self) {
+        self.cursor.cancel();
+        if self
+            .box_at(self.cursor.cell)
+            .is_some_and(|b| !self.board.is_locked(&b))
+        {
+            self.remove(self.cursor.cell);
+        }
     }
 
     /// Moves the cursor `n` cells. In 2D, a move into or out of the screen turns to the
@@ -707,7 +797,35 @@ impl Game {
     /// layer, and the cursor follows the layer, so a first corner on another layer shows
     /// where it lines up on this one.
     fn show_selection(&mut self) {
-        self.set_preview(self.cursor.selection());
+        self.set_preview(self.cursor.selection().map(|r| self.joined(r)));
+    }
+
+    /// The box `r` would make once built: grown over the boxes it cuts into, or `r` itself
+    /// when a locked box is in the way.
+    fn joined(&self, r: BoxRegion) -> BoxRegion {
+        self.board.join(r).map_or(r, |(j, _)| j)
+    }
+
+    /// Builds box `r`, taking in every box it cuts into (see `Board::join`); nothing
+    /// happens when one of them is locked. Box `grow`, else the first one taken in, tweens
+    /// to the new size, and the rest shrink away. Returns true when the board changed.
+    fn build(&mut self, r: BoxRegion, grow: Option<BoxRegion>) -> bool {
+        let Some((joined, cut)) = self.board.join(r) else {
+            return false;
+        };
+        let Some(keep) = grow.or(cut.first().copied()) else {
+            return self.place(joined);
+        };
+        for b in cut.into_iter().filter(|&b| b != keep) {
+            self.remove(b.min);
+        }
+        self.extend(keep, joined)
+    }
+
+    /// Locks box `b`, or unlocks it.
+    fn flip_lock(&mut self, b: BoxRegion) {
+        self.board.lock(&b, !self.board.is_locked(&b));
+        self.sync_blocks();
     }
 
     fn place(&mut self, r: BoxRegion) -> bool {
@@ -766,13 +884,18 @@ impl Game {
             let Some(shown) = clip(&pose, &self.shown) else {
                 continue;
             };
+            let (edge_r, outline_r) = if !b.removing && self.board.is_locked(&b.region) {
+                (LOCKED_R, LOCKED_R)
+            } else {
+                (EDGE_R, OUTLINE_R)
+            };
             if b.wrong {
-                wrong.extend(box_edges(&shown, OUTLINE_R).into_iter().map(|e| (e, WRONG)));
+                wrong.extend(box_edges(&shown, outline_r).into_iter().map(|e| (e, WRONG)));
                 continue;
             }
             let dark = darker(b.color);
             solid.push((shown, b.color));
-            edges.extend(box_edges(&shown, EDGE_R).into_iter().map(|e| (e, dark)));
+            edges.extend(box_edges(&shown, edge_r).into_iter().map(|e| (e, dark)));
             if hatching {
                 cuts.extend(cut_faces(&pose, &self.shown).into_iter().map(|f| (f, dark)));
             }
@@ -819,23 +942,85 @@ impl Game {
         true
     }
 
-    fn target(&self, x: f32, y: f32) -> Target {
-        match self.pick_cell(x, y) {
-            None => Target::Nothing,
-            Some(c) => match self.board.box_at(c) {
-                Some(i) => Target::Block(self.board.boxes()[i]),
-                None => Target::Empty(c),
-            },
+    /// Highlights the cell under the pointer (CSS px); over a locked box with nothing behind
+    /// it, the highlight stays where it was. Returns true when it changed.
+    fn hover_at(&mut self, x: f32, y: f32) -> bool {
+        match self.under(x, y) {
+            Pick::Cell(c) => self.set_hover(Some(c)),
+            Pick::Off => self.set_hover(None),
+            Pick::Locked => false,
         }
     }
 
-    /// The cell under the pointer (CSS px); none on the answer page or once solved.
-    fn pick_cell(&self, x: f32, y: f32) -> Option<Cell> {
+    fn target(&self, under: Pick) -> Target {
+        match under {
+            Pick::Off => Target::Nothing,
+            Pick::Locked => Target::Locked,
+            Pick::Cell(c) => self.box_at(c).map_or(Target::Empty(c), Target::Block),
+        }
+    }
+
+    /// The placed box covering `c`, if any.
+    fn box_at(&self, c: Cell) -> Option<BoxRegion> {
+        self.board.box_at(c).map(|i| self.board.boxes()[i])
+    }
+
+    /// The boxes drawn as solid blocks, which hide what is behind them.
+    fn solid(&self) -> Vec<BoxRegion> {
+        self.blocks
+            .iter()
+            .filter(|b| !b.wrong && !b.removing)
+            .map(|b| b.region)
+            .collect()
+    }
+
+    /// What the pointer (CSS px) is over, going through locked boxes to the open box
+    /// behind; `Off` on the answer page or once solved.
+    fn under(&self, x: f32, y: f32) -> Pick {
+        if !self.playable || self.solved {
+            return Pick::Off;
+        }
+        let (origin, dir) = self.ray(x, y);
+        let (locked, open): (Vec<BoxRegion>, Vec<BoxRegion>) = self
+            .board
+            .boxes()
+            .iter()
+            .partition(|b| self.board.is_locked(b));
+        pick_open(origin, dir, &open, &locked, &self.shown)
+    }
+
+    /// The box the pointer (CSS px) is on as seen, locked or not: what a right-click or a
+    /// hold there locks or unlocks.
+    fn seen_box(&self, x: f32, y: f32) -> Option<BoxRegion> {
         if !self.playable || self.solved {
             return None;
         }
         let (origin, dir) = self.ray(x, y);
-        pick(origin, dir, self.board.boxes(), &self.shown)
+        pick(origin, dir, self.board.boxes(), &self.shown).and_then(|c| self.box_at(c))
+    }
+
+    /// Block `b`'s padlock as `locks` gives it, or `None` when it is out of sight: its box is
+    /// peeled away, or `solid` blocks in front cover part of it on every face.
+    fn padlock(&self, b: &Block, half: f32, solid: &[BoxRegion]) -> Option<[f32; 3]> {
+        let pose = clip(&block_pose(&b.region), &self.shown)?;
+        let others: Vec<BoxRegion> = solid.iter().filter(|&&s| s != b.region).copied().collect();
+        let (own, spots) = if b.wrong {
+            (None, vec![pose.center])
+        } else {
+            let eye: [f32; 3] = self.camera.position().into();
+            (Some(&b.region), faces_toward(&pose, eye))
+        };
+        let [x, y] = spots.into_iter().find_map(|spot| {
+            let [x, y] = self.css_point(Vec3::from(spot));
+            let rays: Vec<_> = PADLOCK_RAYS
+                .iter()
+                .map(|&(dx, dy)| self.ray(x + dx * half, y + dy * half))
+                .collect();
+            (!covered(&rays, spot, own, &others, &self.shown)).then_some([x, y])
+        })?;
+        let c = if b.wrong { WRONG } else { Srgba::BLACK };
+        let rgb = u32::from(c.r) << 16 | u32::from(c.g) << 8 | u32::from(c.b);
+        Some([x, y, rgb as f32])
     }
 
     /// The camera ray through a point on the canvas (CSS px).

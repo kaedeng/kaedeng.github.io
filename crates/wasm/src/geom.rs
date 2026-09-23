@@ -34,6 +34,9 @@ pub const BLOCK_GAP: f32 = 0.06;
 pub const OUTLINE_R: f32 = 0.018;
 /// Half-thickness of the darker edges of a placed block: a bit thinner than a wrong box's.
 pub const EDGE_R: f32 = 0.011;
+/// Half-thickness of a locked box's edges, or its red outline: bolder than either, so a
+/// locked box stands out.
+pub const LOCKED_R: f32 = 0.028;
 /// How far the hatching sits out from a block's cut face, so it never z-fights it.
 const HATCH_LIFT: f32 = 0.004;
 
@@ -155,6 +158,26 @@ pub fn clip(p: &Pose, region: &BoxRegion) -> Option<Pose> {
         center: std::array::from_fn(|i| (a[i] + b[i]) / 2.0),
         half: std::array::from_fn(|i| (b[i] - a[i]) / 2.0),
     })
+}
+
+/// The middles of the faces of `p` turned toward a camera at `eye`, the most in view
+/// first: by area times how squarely each faces the eye.
+pub fn faces_toward(p: &Pose, eye: [f32; 3]) -> Vec<[f32; 3]> {
+    let mut faces: Vec<(f32, [f32; 3])> = Vec::new();
+    for axis in 0..3 {
+        let area = p.half[(axis + 1) % 3] * p.half[(axis + 2) % 3];
+        for sign in [-1.0, 1.0] {
+            let mut middle = p.center;
+            middle[axis] += sign * p.half[axis];
+            let to: [f32; 3] = std::array::from_fn(|i| eye[i] - middle[i]);
+            let cos = sign * to[axis] / to.iter().map(|v| v * v).sum::<f32>().sqrt();
+            if cos > 0.0 {
+                faces.push((area * cos, middle));
+            }
+        }
+    }
+    faces.sort_by(|a, b| b.0.total_cmp(&a.0));
+    faces.into_iter().map(|(_, middle)| middle).collect()
 }
 
 /// Where `clip` cut `p` at a side of `region` that lies inside the cube, i.e. where a
@@ -510,7 +533,11 @@ mod tests {
             let off: Vec<f32> = (0..3).map(|i| (cap.center[i] - c[i]).abs()).collect();
             assert_eq!(off.iter().filter(|&&d| d < 1e-5).count(), 2);
             assert!(off.iter().any(|&d| (d - MARK_LONG).abs() < 1e-5));
-            assert!(cap.half.iter().all(|&h| h > r && (h - cap.half[0]).abs() < 1e-6));
+            assert!(
+                cap.half
+                    .iter()
+                    .all(|&h| h > r && (h - cap.half[0]).abs() < 1e-6)
+            );
         }
     }
 
@@ -543,6 +570,22 @@ mod tests {
         };
         assert!(clip(&spread, &top_off) != Some(spread));
         assert!(cut_faces(&spread, &top_off).is_empty());
+    }
+
+    #[test]
+    fn a_block_shows_the_faces_turned_to_the_eye_the_most_in_view_first() {
+        // A flat block seen from above and a little in front: its big top, then its front.
+        let flat = Pose {
+            center: [0.0, 0.0, 0.0],
+            half: [1.0, 0.5, 1.0],
+        };
+        let faces = faces_toward(&flat, [0.0, 10.0, 6.0]);
+        assert_eq!(faces.len(), 2);
+        assert!(close(faces[0], [0.0, 0.5, 0.0]), "{faces:?}");
+        assert!(close(faces[1], [0.0, 0.0, 1.0]), "{faces:?}");
+        // From low in front, the front comes first, though the top is bigger.
+        let low = faces_toward(&flat, [0.0, 1.0, 10.0]);
+        assert!(close(low[0], [0.0, 0.0, 1.0]), "{low:?}");
     }
 
     #[test]
