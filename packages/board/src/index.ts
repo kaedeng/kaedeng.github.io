@@ -161,6 +161,9 @@ export async function mountBoard(
   const overlay = createOverlay(puzzle, colors);
   sizeOverlay(overlay, canvas.clientWidth);
   canvas.after(overlay.root);
+  // A long press locks a box; on a phone it must not select the labels or text nearby.
+  const unselectable = [canvas, canvas.parentElement!, overlay.root];
+  for (const el of unselectable) setNoSelect(el, true);
 
   let raf = 0;
   let last = 0;
@@ -243,6 +246,7 @@ export async function mountBoard(
       cancelAnimationFrame(raf);
       overlay.root.remove();
       canvas.style.cursor = "";
+      for (const el of unselectable) setNoSelect(el, false);
       game.free();
     },
     pointer(type, x, y, time) {
@@ -357,6 +361,12 @@ function inputListeners(
     },
     // The board's own right-click and long press take the place of the page's menu.
     contextmenu: (e) => e.preventDefault(),
+    // Stops a phone's own long-press handling (text selection, magnifier, callout). That
+    // also stops the tap's mouse events, so focus the board as a tap would.
+    touchstart: (e) => {
+      e.preventDefault();
+      canvas.focus({ preventScroll: true });
+    },
     pointerdown: (e) => {
       // A right-click locks or unlocks the box under it, and is no press.
       if (e.button === 2) {
@@ -384,6 +394,18 @@ function inputListeners(
       pointer.cancel(...point(e));
     },
   };
+}
+
+/** Makes `el` and its text unselectable, and without a long-press callout, or undoes it. */
+function setNoSelect(el: HTMLElement, on: boolean) {
+  for (const prop of [
+    "user-select",
+    "-webkit-user-select",
+    "-webkit-touch-callout",
+  ]) {
+    if (on) el.style.setProperty(prop, "none");
+    else el.style.removeProperty(prop);
+  }
 }
 
 /**
